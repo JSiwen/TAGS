@@ -1,0 +1,2 @@
+Submethod,PSNR,SSIM,LPIPS,Size [Bytes],#Gaussians
+Baseline,32.0487289,0.9341725,0.1144788,110859763,447009

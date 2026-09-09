@@ -1,0 +1,165 @@
+import os
+import sys
+import uuid
+import torch
+import torch.distributed as dist
+from argparse import ArgumentParser, Namespace
+
+from arguments import ModelParams, PipelineParams, OptimizationParams, ExperimentParams
+from gaussian_renderer import network_gui
+from scene import Scene, GaussianModel
+from utils.general_utils import safe_state
+from experiments import ExperimentConfig, TrainingEngine
+from experiments.resolution_schedule import ResolutionSchedule
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_FOUND = True
+except ImportError:
+    TENSORBOARD_FOUND = False
+
+try:
+    from diff_gaussian_rasterization import SparseGaussianAdam  # noqa: F401
+    SPARSE_ADAM_AVAILABLE = True
+except Exception:
+    SPARSE_ADAM_AVAILABLE = False
+
+
+def prepare_output_and_logger(args, is_main_process=True):
+    if not args.model_path:
+        unique_str = os.getenv("OAR_JOB_ID") if os.getenv("OAR_JOB_ID") else str(uuid.uuid4())
+        args.model_path = os.path.join("./output/", unique_str[0:10])
+
+    if not is_main_process:
+        return None
+
+    print("Output folder: {}".format(args.model_path))
+    os.makedirs(args.model_path, exist_ok=True)
+    with open(os.path.join(args.model_path, "cfg_args"), "w") as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**vars(args))))
+    if TENSORBOARD_FOUND:
+        return SummaryWriter(args.model_path)
+    print("Tensorboard not available: not logging progress")
+    return None
+
+
+def setup_distributed(args):
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    use_distributed = bool(args.distributed or env_world_size > 1)
+    if not use_distributed:
+        return {"enabled": False, "rank": 0, "local_rank": 0, "world_size": 1}
+
+    if not args.model_path:
+        raise RuntimeError("Distributed mode requires an explicit --model_path so all ranks write to the same output.")
+
+    local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank if args.local_rank >= 0 else 0))
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        raise RuntimeError("Distributed mode requested but WORLD_SIZE<=1. Please launch with torchrun --nproc_per_node=8.")
+
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend=args.dist_backend, init_method="env://")
+    return {"enabled": True, "rank": rank, "local_rank": local_rank, "world_size": world_size}
+
+
+def main():
+    parser = ArgumentParser(description="3DGS optimized training script parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    ep = ExperimentParams(parser)
+
+    parser.add_argument("--ip", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=6009)
+    parser.add_argument("--debug_from", type=int, default=-1)
+    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--disable_viewer", action="store_true", default=False)
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--distributed", action="store_true", default=False)
+    parser.add_argument("--local_rank", type=int, default=-1)
+    parser.add_argument("--dist_backend", type=str, default="nccl")
+    parser.add_argument(
+        "--ddp_allow_sparse_geometry",
+        action="store_true",
+        default=False,
+        help="Allow sparse optimization and geometry controller in DDP (unsafe; may cause instability).",
+    )
+    args = parser.parse_args(sys.argv[1:])
+    args.save_iterations.append(args.iterations)
+
+    dist_info = setup_distributed(args)
+    is_main_process = dist_info["rank"] == 0
+
+    if not SPARSE_ADAM_AVAILABLE and args.optimizer_type == "sparse_adam":
+        sys.exit("Trying to use sparse adam but it is not installed, please install the correct rasterizer with 3dgs_accel.")
+
+    if is_main_process:
+        print("Optimizing " + args.model_path)
+    safe_state(args.quiet, cuda_device=dist_info["local_rank"])
+    if (not dist_info["enabled"]) and (not args.disable_viewer):
+        network_gui.init(args.ip, args.port)
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
+
+    dataset = lp.extract(args)
+    opt = op.extract(args)
+    pipe = pp.extract(args)
+    cfg = ExperimentConfig.from_args(ep.extract(args))
+
+    if dist_info["enabled"] and not args.ddp_allow_sparse_geometry:
+        # DDP safety mode: topology-changing prune controllers can diverge across
+        # ranks and cause collapse. Keep core training while disabling risky parts.
+        if is_main_process:
+            print("[DDP-SAFE] Disabling sparse optimization and geometry controller for stability.")
+        cfg.enable_sparse_optimization = False
+        cfg.enable_geometry_controller = False
+
+    tb_writer = prepare_output_and_logger(args, is_main_process=is_main_process)
+    if dist_info["enabled"]:
+        dist.barrier(device_ids=[dist_info["local_rank"]])
+    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+
+    resolution_scales = [1.0]
+    if cfg.enable_resolution_adaptive:
+        schedule = ResolutionSchedule(cfg.resolution_schedule)
+        resolution_scales = sorted(set(schedule.scales() + [1.0]))
+        print(f"[Resolution] Preloading scales: {resolution_scales}")
+
+    scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
+    gaussians.training_setup(opt)
+    first_iter = 0
+    if args.start_checkpoint:
+        map_location = torch.device(f"cuda:{dist_info['local_rank']}")
+        model_params, first_iter = torch.load(args.start_checkpoint, map_location=map_location)
+        gaussians.restore(model_params, opt)
+
+    try:
+        engine = TrainingEngine(
+            dataset=dataset,
+            opt=opt,
+            pipe=pipe,
+            cfg=cfg,
+            scene=scene,
+            gaussians=gaussians,
+            tb_writer=tb_writer,
+            sparse_adam_available=SPARSE_ADAM_AVAILABLE,
+            distributed=dist_info["enabled"],
+            rank=dist_info["rank"],
+            world_size=dist_info["world_size"],
+        )
+        engine.run(first_iter, args.test_iterations, args.save_iterations, args.checkpoint_iterations)
+        if dist_info["enabled"]:
+            dist.barrier(device_ids=[dist_info["local_rank"]])
+        if is_main_process:
+            print("\nTraining complete.")
+    finally:
+        if dist_info["enabled"] and dist.is_initialized():
+            dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()
