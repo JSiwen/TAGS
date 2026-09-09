@@ -90,6 +90,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.densify_max_new_points_per_iter = 0
+        self.max_gaussians = 0
         self.setup_functions()
 
     def capture(self):
@@ -228,6 +229,7 @@ class GaussianModel:
         self.densify_max_new_points_per_iter = max(
             0, int(getattr(training_args, "densify_max_new_points_per_iter", 0))
         )
+        self.max_gaussians = max(0, int(getattr(training_args, "max_gaussians", 0)))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
@@ -584,6 +586,26 @@ class GaussianModel:
         self.max_radii2D = next_max_radii2D
         self._assert_optimizer_row_consistency(where="densification_postfix")
 
+    @staticmethod
+    def _keep_top_candidates(selected_pts_mask, scores, max_selected):
+        """Keep at most max_selected candidates, preferring the strongest gradients."""
+        max_selected = max(0, int(max_selected))
+        selected_idx = torch.nonzero(selected_pts_mask, as_tuple=False).squeeze(1)
+        if selected_idx.numel() <= max_selected:
+            return selected_pts_mask
+        limited_mask = torch.zeros_like(selected_pts_mask)
+        if max_selected == 0:
+            return limited_mask
+        selected_scores = scores[selected_idx]
+        keep_local = torch.topk(selected_scores, k=max_selected, sorted=False).indices
+        limited_mask[selected_idx[keep_local]] = True
+        return limited_mask
+
+    def _remaining_gaussian_budget(self):
+        if self.max_gaussians <= 0:
+            return None
+        return max(0, self.max_gaussians - int(self.get_xyz.shape[0]))
+
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
@@ -592,15 +614,17 @@ class GaussianModel:
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        max_selected = int(selected_pts_mask.sum().item())
         if self.densify_max_new_points_per_iter > 0:
-            max_selected = self.densify_max_new_points_per_iter // max(1, N)
-            selected_count = int(selected_pts_mask.sum().item())
-            if selected_count > max_selected:
-                idx = torch.nonzero(selected_pts_mask, as_tuple=False).squeeze(1)
-                if idx.numel() > 0:
-                    keep_idx = idx[torch.randperm(idx.numel(), device=idx.device)[:max_selected]]
-                    selected_pts_mask = torch.zeros_like(selected_pts_mask)
-                    selected_pts_mask[keep_idx] = True
+            max_selected = min(max_selected, self.densify_max_new_points_per_iter // max(1, N))
+        remaining_budget = self._remaining_gaussian_budget()
+        if remaining_budget is not None:
+            # A split replaces one parent with N children, so its persistent net
+            # growth is N - 1 even though the implementation appends before pruning.
+            max_selected = min(max_selected, remaining_budget // max(1, N - 1))
+        selected_pts_mask = self._keep_top_candidates(
+            selected_pts_mask, padded_grad, max_selected
+        )
 
         if not torch.any(selected_pts_mask):
             return
@@ -629,14 +653,16 @@ class GaussianModel:
             selected_pts_mask,
             torch.max(self.get_scaling, dim=1).values <= self.percent_dense * scene_extent,
         )
+        candidate_scores = torch.norm(grads, dim=-1)
+        max_selected = int(selected_pts_mask.sum().item())
         if self.densify_max_new_points_per_iter > 0:
-            selected_count = int(selected_pts_mask.sum().item())
-            if selected_count > self.densify_max_new_points_per_iter:
-                idx = torch.nonzero(selected_pts_mask, as_tuple=False).squeeze(1)
-                if idx.numel() > 0:
-                    keep_idx = idx[torch.randperm(idx.numel(), device=idx.device)[: self.densify_max_new_points_per_iter]]
-                    selected_pts_mask = torch.zeros_like(selected_pts_mask)
-                    selected_pts_mask[keep_idx] = True
+            max_selected = min(max_selected, self.densify_max_new_points_per_iter)
+        remaining_budget = self._remaining_gaussian_budget()
+        if remaining_budget is not None:
+            max_selected = min(max_selected, remaining_budget)
+        selected_pts_mask = self._keep_top_candidates(
+            selected_pts_mask, candidate_scores, max_selected
+        )
 
         if not torch.any(selected_pts_mask):
             return
@@ -711,6 +737,12 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
         self.tmp_radii = None
+
+        if self.max_gaussians > 0 and self.get_xyz.shape[0] > self.max_gaussians:
+            raise RuntimeError(
+                f"Gaussian budget violated after densification: "
+                f"{self.get_xyz.shape[0]} > {self.max_gaussians}"
+            )
 
         torch.cuda.empty_cache()
 

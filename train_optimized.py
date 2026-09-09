@@ -148,6 +148,12 @@ def main():
         map_location = torch.device(f"cuda:{dist_info['local_rank']}")
         model_params, first_iter = torch.load(args.start_checkpoint, map_location=map_location)
         gaussians.restore(model_params, opt)
+        if opt.max_gaussians > 0 and gaussians.get_xyz.shape[0] > opt.max_gaussians:
+            raise ValueError(
+                f"Checkpoint contains {gaussians.get_xyz.shape[0]} Gaussians, exceeding "
+                f"--max_gaussians {opt.max_gaussians}. E2 budget runs must start from "
+                "scratch (or from a checkpoint already within the same budget)."
+            )
 
     if cfg.enable_resolution_aware_schedule:
         before = snapshot_schedule(opt, cfg)

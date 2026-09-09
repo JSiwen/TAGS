@@ -100,6 +100,9 @@ class OptimizationParams(ParamGroup):
         # Upper bound on newly added Gaussians per densification step.
         # 0 keeps original behavior (no cap).
         self.densify_max_new_points_per_iter = 0
+        # Hard upper bound on the number of live Gaussians after a densification
+        # step. 0 keeps the original unbounded behavior.
+        self.max_gaussians = 0
         self.depth_l1_weight_init = 1.0
         self.depth_l1_weight_final = 0.01
         self.random_background = False

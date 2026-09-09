@@ -88,6 +88,8 @@ class TrainingEngine:
             print(f"[Distributed] Enabled with world_size={self.world_size}")
         if self.effective_densify_until_iter > self.opt.densify_until_iter:
             print(f"[Densify] Extending densification until iter {self.effective_densify_until_iter}")
+        if int(getattr(self.opt, "max_gaussians", 0)) > 0:
+            print(f"[Densify] Hard Gaussian budget: {int(self.opt.max_gaussians):,}")
         if self.adaptive_stage_controller.enabled():
             print(
                 "[AdaptiveStage] Enabled: "
@@ -435,6 +437,12 @@ class TrainingEngine:
                 stats["train/fullres_ready"] = 1.0 if train_state["fullres_ready"] else 0.0
                 stats["train/view_sampling_weight"] = float(view_sampling_weight)
                 stats["train/view_loss_weight"] = float(train_state["view_loss_weight"])
+                point_count = int(self.gaussians.get_xyz.shape[0])
+                stats["scene/total_points"] = float(point_count)
+                max_gaussians = int(getattr(self.opt, "max_gaussians", 0))
+                if max_gaussians > 0:
+                    stats["scene/gaussian_budget"] = float(max_gaussians)
+                    stats["scene/budget_utilization"] = point_count / float(max_gaussians)
                 if late_state.get("enabled", False):
                     stage_map = {"structure": 0.0, "handoff": 1.0, "refine": 2.0, "polish": 3.0}
                     stats["train/late_controller_stage"] = stage_map.get(late_state.get("stage"), -1.0)
