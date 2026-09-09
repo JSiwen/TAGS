@@ -20,7 +20,7 @@ E2 只改变 Gaussian 总量上限，其他训练参数、数据划分、随机�
 - 1.5M
 - 2.0M
 - 3.0M
-- 0（无限制对照）
+- 0（无限制对照；默认复用当前 5.27M 完整结果）
 
 DN-Splatter 约 1.12M，因此 1.0M 是更严格且最关键的对照。如果 1.0M 已优于
 DN，则可直接证明 TAGS 在更小规模下仍领先；如果 1.0M 未领先而 1.5M 领先，
@@ -69,6 +69,14 @@ $env:E2_BUDGETS = "1000000,1500000,2000000"
 
 ```powershell
 $env:E2_SKIP_COMPLETED = "0"
+.\scripts\run_vr_room_e2_gaussian_budget.ps1
+```
+
+默认命令只训练四个固定预算组，汇总脚本会自动读取
+`output/vr_room_indoor_sensor_depth` 作为无限制对照。如需从头重跑无限制组：
+
+```powershell
+$env:E2_BUDGETS = "0"
 .\scripts\run_vr_room_e2_gaussian_budget.ps1
 ```
 

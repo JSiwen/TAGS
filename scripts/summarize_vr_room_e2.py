@@ -31,7 +31,8 @@ def read_jsonl(path):
 
 
 def budget_from_case(case_dir):
-    label = case_dir.name.removeprefix("vr_room_e2_budget_")
+    prefix = "vr_room_e2_budget_"
+    label = case_dir.name[len(prefix) :] if case_dir.name.startswith(prefix) else case_dir.name
     if label in LABEL_TO_BUDGET:
         return LABEL_TO_BUDGET[label], label
     match = re.fullmatch(r"(\d+(?:\.\d+)?)m", label)
@@ -40,8 +41,12 @@ def budget_from_case(case_dir):
     return None, label
 
 
-def summarize_case(case_dir):
+def summarize_case(case_dir, budget_override=None, label_override=None):
     budget, label = budget_from_case(case_dir)
+    if budget_override is not None:
+        budget = budget_override
+    if label_override is not None:
+        label = label_override
     rows = read_jsonl(case_dir / "live_logs" / "stage_snapshots.jsonl")
     evaluated = [row for row in rows if (row.get("eval") or {}).get("test")]
     if not evaluated:
@@ -150,6 +155,11 @@ def write_csv(path, cases):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default="output")
+    parser.add_argument(
+        "--unlimited-case",
+        default="output/vr_room_indoor_sensor_depth",
+        help="Existing uncapped baseline directory; pass an empty string to exclude it.",
+    )
     parser.add_argument("--dn-reference", default="")
     parser.add_argument("--saturation-threshold-db", type=float, default=0.05)
     parser.add_argument("--json-out", default="output/vr_room_e2_summary.json")
@@ -159,6 +169,14 @@ def main():
     root = Path(args.output_root)
     case_dirs = sorted(path for path in root.glob("vr_room_e2_budget_*") if path.is_dir())
     cases = [summarize_case(path) for path in case_dirs]
+    if args.unlimited_case and Path(args.unlimited_case).is_dir():
+        cases.append(
+            summarize_case(
+                Path(args.unlimited_case),
+                budget_override=0,
+                label_override="unlimited_existing_baseline",
+            )
+        )
     summary = analyze_curve(
         cases,
         load_dn_reference(args.dn_reference),

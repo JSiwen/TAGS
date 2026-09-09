@@ -1,10 +1,13 @@
 # E2: vr_room fixed-Gaussian-budget quality/scale experiment.
 #
-# Run all budgets from an activated gaussian_splatting environment:
+# Run the four fixed budgets from an activated gaussian_splatting environment:
 #   .\scripts\run_vr_room_e2_gaussian_budget.ps1
 #
 # Run selected budgets:
 #   $env:E2_BUDGETS = "1000000,1500000"; .\scripts\run_vr_room_e2_gaussian_budget.ps1
+#
+# The existing 5.27M run is reused as the unlimited control by the summarizer.
+# Set E2_BUDGETS=0 explicitly only when a fresh unlimited rerun is needed.
 #
 # A budget of 0 means unlimited. Fixed-budget runs intentionally start from
 # scratch; resuming a checkpoint above the requested budget is rejected.
@@ -16,7 +19,7 @@ Set-Location $ROOT
 $budgets = if ($env:E2_BUDGETS) {
     $env:E2_BUDGETS.Split(",") | ForEach-Object { [int]$_.Trim() }
 } else {
-    @(1000000, 1500000, 2000000, 3000000, 0)
+    @(1000000, 1500000, 2000000, 3000000)
 }
 $skipCompleted = if ($env:E2_SKIP_COMPLETED) { $env:E2_SKIP_COMPLETED -ne "0" } else { $true }
 $python = if ($env:E2_PYTHON) { $env:E2_PYTHON } else { "python" }
