@@ -102,9 +102,18 @@ foreach ($budget in $budgets) {
     $env:KMP_DUPLICATE_LIB_OK = "TRUE"
     $logPath = Join-Path $modelDir "e2_train_console.log"
     Write-Host "[E2] Starting budget=$label ($budget), output=$modelDir"
-    & $python @trainArgs 2>&1 | Tee-Object -FilePath $logPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "E2 budget=$label failed with exit code $LASTEXITCODE"
+    # Windows PowerShell turns native stderr (including tqdm progress) into
+    # ErrorRecord objects. Keep those non-terminating and judge by exit code.
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $python @trainArgs 2>&1 | Tee-Object -FilePath $logPath
+        $trainExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($trainExitCode -ne 0) {
+        throw "E2 budget=$label failed with exit code $trainExitCode"
     }
 }
 
