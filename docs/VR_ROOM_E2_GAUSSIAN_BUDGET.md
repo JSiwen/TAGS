@@ -153,6 +153,33 @@ snapshot: preserve pre-E2 TAGSs codebase
   0.00830 的有效改善。
 - 在目标范围内，1.0M 相对无限制损失 0.3865 dB，1.5M 损失 0.2450 dB，
   2.0M 损失 0.2144 dB。
-- 是否在约 1.12M 时仍优于 DN 尚不能下结论，因为当前项目中没有保存同协议的
-  DN 数值。取得 DN 参考指标后应先比较 1.0M；只有当结论处于 1.0M 与 1.5M
-  之间时，才补跑精确 1.12M。
+## DN-Splatter（vr_room Within）对照
+
+来源：matched 42-view holdout scorecard / comparison notes。
+
+| Method | Gaussians | PSNR↑ | SSIM↑ | LPIPS↓ |
+|--------|----------:|------:|------:|-------:|
+| DN-Splatter Within | 1.12M | 26.4 | 0.86 | 0.134 |
+| TAGS 1.0M | 0.999M | 27.149 | 0.868 | 0.246 |
+| TAGS 1.5M | 1.500M | 27.291 | 0.873 | 0.236 |
+| TAGS 2.0M | 2.000M | 27.321 | 0.876 | 0.228 |
+| TAGS 3.0M | 2.999M | 27.402 | 0.880 | 0.218 |
+| TAGS unlimited | 5.272M | 27.536 | 0.883 | 0.207 |
+
+相对 DN 的差值（TAGS − DN）：
+
+| TAGS budget | ΔPSNR | ΔSSIM | ΔLPIPS | 规模比 |
+|-------------|------:|------:|-------:|-------:|
+| 1.0M | +0.75 | +0.008 | +0.112 | 0.89× |
+| 1.5M | +0.89 | +0.013 | +0.102 | 1.34× |
+| 2.0M | +0.92 | +0.016 | +0.094 | 1.79× |
+| 3.0M | +1.00 | +0.020 | +0.084 | 2.68× |
+| unlimited | +1.14 | +0.023 | +0.073 | 4.71× |
+
+### 结论
+
+1. **NVS 表格指标（PSNR/SSIM）**：TAGS 在全部 E2 预算下均领先 DN。即便压缩到约 1.0M（略小于 DN 的 1.12M），仍有约 **+0.75 dB PSNR / +0.008 SSIM**。约 1.12M 不必补跑也能判定 PSNR/SSIM 仍优于 DN。
+2. **规模效率**：DN 更紧凑；TAGS 无限制模型约为 DN 的 4.7×，但质量优势并非单纯靠点数堆出来——1.0M TAGS 已超过 DN。
+3. **LPIPS**：当前数值上 DN 更好（0.134 vs TAGS 0.21–0.25），但双方 LPIPS 实现不同（torchmetrics vs TAGS 自带包），且 bicycle 上曾出现反向结果，**不宜把 vr_room LPIPS 绝对差值当作稳健结论**。在 TAGS 内部，LPIPS 随点数增加单调改善。
+4. **推荐预算**：若目标是「压到 1–2M 且保持相对 DN 的 NVS 优势」，**1.5M** 是性价比拐点（相对 DN +0.89 dB，相对无限制仅 −0.25 dB）。若更看重 TAGS 内部感知指标继续下降，可取 **2.0M**。
+5. **协议注意**：poses（mushroom json vs COLMAP）、rasterizer（gsplat vs Inria）不完全一致；图中 DN AbsRel/RMSE 几何指标 TAGS 尚未按同协议评测，几何优劣暂不排名。
