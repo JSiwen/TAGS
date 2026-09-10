@@ -183,3 +183,5 @@ snapshot: preserve pre-E2 TAGSs codebase
 3. **LPIPS**：当前数值上 DN 更好（0.134 vs TAGS 0.21–0.25），但双方 LPIPS 实现不同（torchmetrics vs TAGS 自带包），且 bicycle 上曾出现反向结果，**不宜把 vr_room LPIPS 绝对差值当作稳健结论**。在 TAGS 内部，LPIPS 随点数增加单调改善。
 4. **推荐预算**：若目标是「压到 1–2M 且保持相对 DN 的 NVS 优势」，**1.5M** 是性价比拐点（相对 DN +0.89 dB，相对无限制仅 −0.25 dB）。若更看重 TAGS 内部感知指标继续下降，可取 **2.0M**。
 5. **协议注意**：poses（mushroom json vs COLMAP）、rasterizer（gsplat vs Inria）不完全一致；图中 DN AbsRel/RMSE 几何指标 TAGS 尚未按同协议评测，几何优劣暂不排名。
+
+下一阶段见 [`docs/VR_ROOM_E3_PRUNE_ABLATION.md`](VR_ROOM_E3_PRUNE_ABLATION.md)：在保持相对 DN 的 NVS 优势前提下，用剪枝策略把规模压到 ≤2M，并要求 FPS ≥1.5× 无限制基线。

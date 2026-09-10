@@ -48,6 +48,15 @@ class TrainingEngine:
         self.world_size = int(world_size)
         self.is_main_process = self.rank == 0
 
+        densify_frac = float(getattr(self.opt, "densify_until_fraction", 0.0) or 0.0)
+        if densify_frac > 0.0:
+            self.opt.densify_until_iter = max(1, int(self.opt.iterations * densify_frac))
+            if self.is_main_process:
+                print(
+                    f"[Densify] densify_until_fraction={densify_frac:.3f} -> "
+                    f"densify_until_iter={self.opt.densify_until_iter}"
+                )
+
         self.geo_prior = GeometricPriorLoss(cfg)
         self.res_schedule = ResolutionSchedule(cfg.resolution_schedule)
         self.sparse_controller = SparseController(cfg, self.res_schedule)
@@ -90,6 +99,22 @@ class TrainingEngine:
             print(f"[Densify] Extending densification until iter {self.effective_densify_until_iter}")
         if int(getattr(self.opt, "max_gaussians", 0)) > 0:
             print(f"[Densify] Hard Gaussian budget: {int(self.opt.max_gaussians):,}")
+        self.prune_until_iter = self._resolve_prune_until_iter()
+        self.prune_only_from_iter = self._resolve_prune_only_from_iter()
+        self.effective_densify_until_iter = min(
+            self.effective_densify_until_iter, self.prune_only_from_iter
+        )
+        if self.is_main_process:
+            print(
+                "[Prune] "
+                f"opacity>={float(getattr(self.opt, 'prune_opacity_threshold', 0.005)):.4f}, "
+                f"min_visibility={int(getattr(self.opt, 'prune_min_visibility', 0))}, "
+                f"max_screen_size={float(getattr(self.opt, 'prune_max_screen_size', -1.0))}, "
+                f"grad_threshold={float(getattr(self.opt, 'prune_grad_threshold', 0.0))}, "
+                f"densify_until={self.effective_densify_until_iter}, "
+                f"prune_only_from={self.prune_only_from_iter}, "
+                f"prune_until={self.prune_until_iter}"
+            )
         if self.adaptive_stage_controller.enabled():
             print(
                 "[AdaptiveStage] Enabled: "
@@ -132,6 +157,33 @@ class TrainingEngine:
         if fullres_start is None:
             return 0
         return fullres_start + max(0, int(self.cfg.spa_after_fullres_delay))
+
+    def _resolve_prune_until_iter(self):
+        fraction = float(getattr(self.opt, "prune_until_fraction", 0.0) or 0.0)
+        absolute = int(getattr(self.opt, "prune_until_iter", 0) or 0)
+        if fraction > 0.0:
+            return max(1, int(self.opt.iterations * fraction))
+        if absolute > 0:
+            return absolute
+        # Legacy default: stop prune when densify stops.
+        return int(self.effective_densify_until_iter)
+
+    def _resolve_prune_only_from_iter(self):
+        fraction = float(getattr(self.opt, "prune_only_from_fraction", 0.0) or 0.0)
+        absolute = int(getattr(self.opt, "prune_only_from_iter", 0) or 0)
+        if fraction > 0.0:
+            return max(1, int(self.opt.iterations * fraction))
+        if absolute > 0:
+            return absolute
+        return int(self.effective_densify_until_iter)
+
+    def _resolve_screen_size_threshold(self, iteration):
+        configured = float(getattr(self.opt, "prune_max_screen_size", -1.0))
+        if configured < 0:
+            return 20 if iteration > self.opt.opacity_reset_interval else None
+        if configured == 0:
+            return None
+        return configured
 
     @staticmethod
     def _parse_live_stage_iterations(spec):
@@ -492,7 +544,7 @@ class TrainingEngine:
                     print(f"\n[ITER {iteration}] Saving Gaussians")
                     self.scene.save(iteration)
 
-                if iteration < self.effective_densify_until_iter:
+                if iteration < self.prune_until_iter:
                     visibility_filter = render_pkg["visibility_filter"]
                     radii = render_pkg["radii"]
                     densify_grad = self.opt.densify_grad_threshold
@@ -509,6 +561,8 @@ class TrainingEngine:
                         self._sync_tensor_(self.gaussians.xyz_gradient_accum, op="sum")
                         self._sync_tensor_(self.gaussians.denom, op="sum")
                         self._sync_tensor_(self.gaussians.max_radii2D, op="max")
+                        if getattr(self.gaussians, "visibility_count", None) is not None:
+                            self._sync_tensor_(self.gaussians.visibility_count, op="sum")
                     densify_interval = self.opt.densification_interval
                     point_count = int(self.gaussians.get_xyz.shape[0])
                     if (
@@ -518,10 +572,19 @@ class TrainingEngine:
                     ):
                         densify_interval *= fullres_densify_mult
                     if iteration > self.opt.densify_from_iter and iteration % densify_interval == 0:
-                        size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
+                        do_densify = iteration < self.effective_densify_until_iter
+                        size_threshold = self._resolve_screen_size_threshold(iteration)
                         try:
                             self.gaussians.densify_and_prune(
-                                densify_grad, 0.005, self.scene.cameras_extent, size_threshold, radii
+                                densify_grad,
+                                float(getattr(self.opt, "prune_opacity_threshold", 0.005)),
+                                self.scene.cameras_extent,
+                                size_threshold,
+                                radii,
+                                do_densify=do_densify,
+                                min_visibility=int(getattr(self.opt, "prune_min_visibility", 0)),
+                                grad_threshold=float(getattr(self.opt, "prune_grad_threshold", 0.0)),
+                                grad_min_denom=float(getattr(self.opt, "prune_grad_min_denom", 1.0)),
                             )
                         except RuntimeError as e:
                             if "out of memory" in str(e).lower():
@@ -531,8 +594,9 @@ class TrainingEngine:
                                 torch.cuda.empty_cache()
                             else:
                                 raise
-                    if iteration % self.opt.opacity_reset_interval == 0 or (
-                        self.dataset.white_background and iteration == self.opt.densify_from_iter
+                    if iteration < self.effective_densify_until_iter and (
+                        iteration % self.opt.opacity_reset_interval == 0
+                        or (self.dataset.white_background and iteration == self.opt.densify_from_iter)
                     ):
                         self.gaussians.reset_opacity()
 

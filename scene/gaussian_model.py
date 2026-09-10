@@ -91,6 +91,7 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.densify_max_new_points_per_iter = 0
         self.max_gaussians = 0
+        self.visibility_count = torch.empty(0)
         self.setup_functions()
 
     def capture(self):
@@ -232,6 +233,7 @@ class GaussianModel:
         self.max_gaussians = max(0, int(getattr(training_args, "max_gaussians", 0)))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.visibility_count = torch.zeros((self.get_xyz.shape[0],), device="cuda", dtype=torch.long)
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -506,6 +508,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        if getattr(self, "visibility_count", None) is not None and self.visibility_count.numel() == valid_points_mask.shape[0]:
+            self.visibility_count = self.visibility_count[valid_points_mask]
         # tmp_radii only exists during densify_and_prune; sparse/budget pruning runs after and clears it.
         tr = getattr(self, "tmp_radii", None)
         if tr is not None:
@@ -584,6 +588,13 @@ class GaussianModel:
         self.xyz_gradient_accum = next_xyz_gradient_accum
         self.denom = next_denom
         self.max_radii2D = next_max_radii2D
+        # Lifetime visibility must survive densify resets of xyz_gradient_accum/denom.
+        old_vis = getattr(self, "visibility_count", None)
+        if old_vis is None or old_vis.numel() != (target_n - new_xyz.shape[0]):
+            old_vis = torch.zeros((target_n - new_xyz.shape[0],), device="cuda", dtype=torch.long)
+        self.visibility_count = torch.cat(
+            (old_vis, torch.zeros((new_xyz.shape[0],), device="cuda", dtype=torch.long))
+        )
         self._assert_optimizer_row_consistency(where="densification_postfix")
 
     @staticmethod
@@ -684,52 +695,88 @@ class GaussianModel:
         msg = str(err).lower()
         return "out of memory" in msg or type(err).__name__ in ("OutOfMemoryError", "OutOfMemory")
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+    def densify_and_prune(
+        self,
+        max_grad,
+        min_opacity,
+        extent,
+        max_screen_size,
+        radii,
+        do_densify=True,
+        min_visibility=0,
+        grad_threshold=0.0,
+        grad_min_denom=1.0,
+    ):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
-
         self.tmp_radii = radii
 
-        min_free_mb = int(os.environ.get("TAGGS_DENSIFY_MIN_FREE_MB", "0"))
-        if min_free_mb > 0 and torch.cuda.is_available():
-            free_b, _ = torch.cuda.mem_get_info()
-            if free_b < min_free_mb * 1024 * 1024:
-                print(
-                    f"[Densify] GPU free memory {free_b // (1024 * 1024)} MiB < "
-                    f"{min_free_mb} MiB (TAGGS_DENSIFY_MIN_FREE_MB); skipping clone/split this round (prune still runs)."
-                )
+        # Contribution / lifetime-visibility prune uses pre-densify stats. Apply
+        # it before clone/split because densification_postfix zeros accumulators.
+        pre_mask = (self.get_opacity < min_opacity).squeeze()
+        if int(min_visibility) > 0 and getattr(self, "visibility_count", None) is not None:
+            if self.visibility_count.numel() == self.get_xyz.shape[0]:
+                pre_mask = torch.logical_or(pre_mask, self.visibility_count < int(min_visibility))
+        if float(grad_threshold) > 0.0:
+            mean_grad = torch.norm(grads, dim=-1)
+            if mean_grad.shape[0] != self.get_xyz.shape[0]:
+                padded = torch.zeros((self.get_xyz.shape[0],), device=mean_grad.device, dtype=mean_grad.dtype)
+                n = min(mean_grad.shape[0], padded.shape[0])
+                padded[:n] = mean_grad[:n]
+                mean_grad = padded
+            low_grad = mean_grad < float(grad_threshold)
+            enough_obs = self.denom.squeeze(-1) >= float(grad_min_denom)
+            pre_mask = torch.logical_or(pre_mask, torch.logical_and(low_grad, enough_obs))
+        if torch.any(pre_mask):
+            self.prune_points(pre_mask)
+            grads = self.xyz_gradient_accum / self.denom
+            grads[grads.isnan()] = 0.0
+            if self.tmp_radii is not None and self.tmp_radii.shape[0] != self.get_xyz.shape[0]:
+                # tmp_radii already filtered inside prune_points when present.
+                pass
+
+        if do_densify:
+            min_free_mb = int(os.environ.get("TAGGS_DENSIFY_MIN_FREE_MB", "0"))
+            if min_free_mb > 0 and torch.cuda.is_available():
+                free_b, _ = torch.cuda.mem_get_info()
+                if free_b < min_free_mb * 1024 * 1024:
+                    print(
+                        f"[Densify] GPU free memory {free_b // (1024 * 1024)} MiB < "
+                        f"{min_free_mb} MiB (TAGGS_DENSIFY_MIN_FREE_MB); skipping clone/split this round (prune still runs)."
+                    )
+                else:
+                    torch.cuda.empty_cache()
+                    try:
+                        self.densify_and_clone(grads, max_grad, extent)
+                    except RuntimeError as e:
+                        if self._densify_cuda_oom(e):
+                            print("[Densify] CUDA OOM during densify_and_clone; skipping clone and split this round.")
+                            torch.cuda.empty_cache()
+                        else:
+                            raise
+                    else:
+                        torch.cuda.empty_cache()
+                        try:
+                            self.densify_and_split(grads, max_grad, extent)
+                        except RuntimeError as e:
+                            if self._densify_cuda_oom(e):
+                                print("[Densify] CUDA OOM during densify_and_split; continuing (clone may have succeeded).")
+                                torch.cuda.empty_cache()
+                            else:
+                                raise
             else:
                 torch.cuda.empty_cache()
                 try:
                     self.densify_and_clone(grads, max_grad, extent)
+                    self.densify_and_split(grads, max_grad, extent)
                 except RuntimeError as e:
                     if self._densify_cuda_oom(e):
-                        print("[Densify] CUDA OOM during densify_and_clone; skipping clone and split this round.")
+                        print("[Densify] CUDA OOM during densify; skipping this densify step and continuing.")
                         torch.cuda.empty_cache()
                     else:
                         raise
-                else:
-                    torch.cuda.empty_cache()
-                    try:
-                        self.densify_and_split(grads, max_grad, extent)
-                    except RuntimeError as e:
-                        if self._densify_cuda_oom(e):
-                            print("[Densify] CUDA OOM during densify_and_split; continuing (clone may have succeeded).")
-                            torch.cuda.empty_cache()
-                        else:
-                            raise
-        else:
-            torch.cuda.empty_cache()
-            try:
-                self.densify_and_clone(grads, max_grad, extent)
-                self.densify_and_split(grads, max_grad, extent)
-            except RuntimeError as e:
-                if self._densify_cuda_oom(e):
-                    print("[Densify] CUDA OOM during densify; skipping this densify step and continuing.")
-                    torch.cuda.empty_cache()
-                else:
-                    raise
 
+        # Post densify/prune-only: opacity + oversized screen/world Gaussians.
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
@@ -751,3 +798,6 @@ class GaussianModel:
             viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[update_filter] += 1
+        if getattr(self, "visibility_count", None) is not None and self.visibility_count.numel() == self.get_xyz.shape[0]:
+            vis_idx = update_filter.view(-1)
+            self.visibility_count[vis_idx] += 1

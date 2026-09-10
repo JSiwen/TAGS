@@ -109,7 +109,7 @@ def build_scaling_rotation(s, r):
     L = R @ L
     return L
 
-def safe_state(silent, cuda_device=0):
+def safe_state(silent, cuda_device=0, seed=0):
     old_f = sys.stdout
     class F:
         def __init__(self, silent):
@@ -127,7 +127,10 @@ def safe_state(silent, cuda_device=0):
 
     sys.stdout = F(silent)
 
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     torch.cuda.set_device(torch.device(f"cuda:{int(cuda_device)}"))

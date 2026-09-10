@@ -96,6 +96,8 @@ class OptimizationParams(ParamGroup):
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 18_000
+        # If > 0, overrides densify_until_iter as floor(iterations * fraction).
+        self.densify_until_fraction = 0.0
         self.densify_grad_threshold = 0.00016
         # Upper bound on newly added Gaussians per densification step.
         # 0 keeps original behavior (no cap).
@@ -103,6 +105,29 @@ class OptimizationParams(ParamGroup):
         # Hard upper bound on the number of live Gaussians after a densification
         # step. 0 keeps the original unbounded behavior.
         self.max_gaussians = 0
+        # Pruning controls (E3). densify_and_prune historically used a hard-coded
+        # opacity floor of 0.005 and a screen-size gate of 20 after opacity reset.
+        self.prune_opacity_threshold = 0.005
+        # Lifetime visibility count floor. 0 disables. Points below this are pruned.
+        self.prune_min_visibility = 0
+        # Screen-space radius prune threshold.
+        #   < 0 : legacy behavior (20 only after opacity_reset_interval)
+        #   = 0 : disable screen-size pruning
+        #   > 0 : always prune radii above this value while pruning is active
+        self.prune_max_screen_size = -1.0
+        # Mean position-gradient floor used as a contribution gate. 0 disables.
+        self.prune_grad_threshold = 0.0
+        # Require at least this many densify-interval observations before applying
+        # the gradient contribution prune (avoids wiping brand-new Gaussians).
+        self.prune_grad_min_denom = 1.0
+        # If > 0, densify stops at floor(iterations * fraction) even when
+        # densify_until_iter is later. Pruning continues until prune_until_*.
+        self.prune_only_from_fraction = 0.0
+        self.prune_only_from_iter = 0
+        # If > 0, overrides prune_until_iter as floor(iterations * fraction).
+        # Default 0 keeps prune_until_iter = iterations (prune through the end).
+        self.prune_until_fraction = 0.0
+        self.prune_until_iter = 0
         self.depth_l1_weight_init = 1.0
         self.depth_l1_weight_final = 0.01
         self.random_background = False

@@ -88,6 +88,7 @@ def main():
     parser.add_argument("--disable_viewer", action="store_true", default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=0, help="RNG seed for reproducibility.")
     parser.add_argument("--distributed", action="store_true", default=False)
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--dist_backend", type=str, default="nccl")
@@ -108,7 +109,9 @@ def main():
 
     if is_main_process:
         print("Optimizing " + args.model_path)
-    safe_state(args.quiet, cuda_device=dist_info["local_rank"])
+    safe_state(args.quiet, cuda_device=dist_info["local_rank"], seed=int(getattr(args, "seed", 0)))
+    if is_main_process:
+        print(f"[RNG] seed={int(getattr(args, 'seed', 0))}")
     if (not dist_info["enabled"]) and (not args.disable_viewer):
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
