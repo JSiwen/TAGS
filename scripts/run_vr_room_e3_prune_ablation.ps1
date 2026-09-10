@@ -14,6 +14,12 @@
 #
 # After training, FPS + gate summary:
 #   python scripts\summarize_vr_room_e3.py --measure-fps 1
+#
+# Resume / checkpoints:
+#   - If point_cloud/iteration_30000 exists, the case is skipped (unless E3_SKIP_COMPLETED=0).
+#   - Otherwise the newest chkpnt*.pth under the case dir is passed as --start_checkpoint.
+#   - Default checkpoint cadence is every 3k iters (override with E3_CHECKPOINT_ITERS).
+#   - Disable auto-resume: $env:E3_AUTO_RESUME = "0"
 
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
@@ -21,11 +27,36 @@ Set-Location $ROOT
 
 $phase = if ($env:E3_PHASE) { $env:E3_PHASE.Trim().ToLower() } else { "screen" }
 $skipCompleted = if ($env:E3_SKIP_COMPLETED) { $env:E3_SKIP_COMPLETED -ne "0" } else { $true }
+$autoResume = if ($env:E3_AUTO_RESUME) { $env:E3_AUTO_RESUME -ne "0" } else { $true }
 $python = if ($env:E3_PYTHON) { $env:E3_PYTHON } else { "python" }
 $seedList = if ($env:E3_SEEDS) {
     $env:E3_SEEDS.Split(",") | ForEach-Object { [int]$_.Trim() }
 } else {
     if ($phase -eq "multiseed") { @(0, 1, 2) } else { @(0) }
+}
+$checkpointIterations = if ($env:E3_CHECKPOINT_ITERS) {
+    $env:E3_CHECKPOINT_ITERS.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+} else {
+    # Dense cadence for safer resume (every 3k through 30k).
+    @("3000", "6000", "9000", "12000", "15000", "18000", "21000", "24000", "27000", "30000")
+}
+
+function Get-LatestCheckpoint {
+    param([string]$ModelDir)
+    if (-not (Test-Path $ModelDir)) { return $null }
+    $bestPath = $null
+    $bestIter = -1
+    Get-ChildItem -Path $ModelDir -Filter "chkpnt*.pth" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.BaseName -match '^chkpnt(\d+)$') {
+            $iter = [int]$Matches[1]
+            if ($iter -gt $bestIter) {
+                $bestIter = $iter
+                $bestPath = $_.FullName
+            }
+        }
+    }
+    if ($null -eq $bestPath) { return $null }
+    return @{ Path = $bestPath; Iteration = $bestIter }
 }
 
 function Get-BaseProfile {
@@ -140,6 +171,18 @@ foreach ($name in $profiles.Keys) {
         }
 
         New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+        $resumeCkpt = $null
+        if ($autoResume) {
+            $resumeCkpt = Get-LatestCheckpoint -ModelDir $modelDir
+            if ($null -ne $resumeCkpt -and [int]$resumeCkpt.Iteration -ge 30000 -and (Test-Path $finalPly)) {
+                Write-Host "[E3] Skip completed $caseName (chkpnt$($resumeCkpt.Iteration) + final ply)"
+                continue
+            }
+            if ($null -ne $resumeCkpt -and [int]$resumeCkpt.Iteration -ge 30000 -and -not (Test-Path $finalPly)) {
+                Write-Host "[E3] Found chkpnt$($resumeCkpt.Iteration) but missing final ply; will resume and re-save."
+            }
+        }
+
         $trainArgs = @(
             "train_optimized.py",
             "-s", (Join-Path $ROOT "data\vr_room"),
@@ -196,9 +239,17 @@ foreach ($name in $profiles.Keys) {
             "--live_stage_iterations", "7000,10000,15000,18000,24000,30000",
             "--test_iterations", "7000", "15000", "24000", "30000",
             "--save_iterations", "30000",
-            "--checkpoint_iterations", "15000", "30000",
+            "--checkpoint_iterations"
+        ) + $checkpointIterations + @(
             "--disable_viewer"
         )
+
+        if ($null -ne $resumeCkpt) {
+            $trainArgs += @("--start_checkpoint", "$($resumeCkpt.Path)")
+            Write-Host "[E3] Resume $caseName from chkpnt$($resumeCkpt.Iteration) ($($resumeCkpt.Path))"
+        } else {
+            Write-Host "[E3] Starting $caseName from scratch"
+        }
 
         $env:TAGGS_CPU_KNN_INIT = "1"
         $env:KMP_DUPLICATE_LIB_OK = "TRUE"
@@ -208,14 +259,23 @@ foreach ($name in $profiles.Keys) {
             seed = $seed
             settings = $profile
             model_dir = $modelDir
+            auto_resume = $autoResume
+            resume_checkpoint = if ($null -ne $resumeCkpt) { $resumeCkpt.Path } else { $null }
+            resume_iteration = if ($null -ne $resumeCkpt) { $resumeCkpt.Iteration } else { $null }
+            checkpoint_iterations = $checkpointIterations
         }
         ($meta | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $modelDir "e3_profile.json") -Encoding UTF8
 
-        Write-Host "[E3] Starting $caseName"
         $savedErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $python @trainArgs 2>&1 | Tee-Object -FilePath $logPath
+            if ($null -ne $resumeCkpt -and (Test-Path $logPath)) {
+                "`n==== RESUME $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') from chkpnt$($resumeCkpt.Iteration) ====`n" |
+                    Add-Content -Path $logPath -Encoding UTF8
+                & $python @trainArgs 2>&1 | Tee-Object -FilePath $logPath -Append
+            } else {
+                & $python @trainArgs 2>&1 | Tee-Object -FilePath $logPath
+            }
             $trainExitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $savedErrorActionPreference

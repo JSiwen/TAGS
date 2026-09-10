@@ -83,6 +83,14 @@ python scripts\summarize_vr_room_e3.py --measure-fps 1
 
 输出目录：`output/vr_room_e3_<profile>/`。
 
+### 断点续训与 checkpoint
+
+- 若已有 `point_cloud/iteration_30000/point_cloud.ply`，默认跳过该 case。
+- 否则自动选取目录中**迭代号最大**的 `chkpnt*.pth`，传入 `--start_checkpoint` 续训。
+- 默认每 **3k** 保存一次 checkpoint：`3000…30000`（可用 `E3_CHECKPOINT_ITERS` 覆盖）。
+- 关闭自动续训：`$env:E3_AUTO_RESUME = "0"`。
+- 强制重跑已完成 case：`$env:E3_SKIP_COMPLETED = "0"`。
+
 ## 多种子复现（最优 2 个配置 × 3 种子）
 
 单种子筛选后，从 `output/vr_room_e3_summary.json` 的 `recommended_top2_for_multiseed` 取值：
