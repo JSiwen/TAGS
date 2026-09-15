@@ -71,6 +71,7 @@ class TrainingEngine:
         self._prev_test_psnr = None
         self._ema_photo_loss = None
         self._prev_ema_photo_loss = None
+        self._logged_prune_only = False
 
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -177,7 +178,11 @@ class TrainingEngine:
             return absolute
         return int(self.effective_densify_until_iter)
 
-    def _resolve_screen_size_threshold(self, iteration):
+    def _resolve_screen_size_threshold(self, iteration, do_densify=True):
+        # Oversized screen/world prune without clone/split deletes coverage
+        # Gaussians and collapses the model. Keep it only while densifying.
+        if not do_densify:
+            return None
         configured = float(getattr(self.opt, "prune_max_screen_size", -1.0))
         if configured < 0:
             return 20 if iteration > self.opt.opacity_reset_interval else None
@@ -520,29 +525,19 @@ class TrainingEngine:
                 with torch.no_grad():
                     ema_loss_for_log = 0.4 * float(loss.item()) + 0.6 * ema_loss_for_log
                     if self.is_main_process and iteration % 10 == 0:
-                        progress = {"Loss": f"{ema_loss_for_log:.7f}"}
+                        gaussian_label = f"{point_count:,}"
+                        if max_gaussians > 0:
+                            gaussian_label = f"{point_count:,}/{max_gaussians:,}"
+                        progress = {
+                            "Loss": f"{ema_loss_for_log:.7f}",
+                            "Gaussians": gaussian_label,
+                        }
                         if "geo/depth_loss" in stats:
                             progress["Depth Loss"] = f"{stats['geo/depth_loss']:.7f}"
                         if "geo/normal_loss" in stats:
                             progress["Normal Loss"] = f"{stats['geo/normal_loss']:.7f}"
                         progress_bar.set_postfix(progress)
                         progress_bar.update(10)
-                    if self.is_main_process and iteration == self.opt.iterations:
-                        progress_bar.close()
-
-                    eval_results = {}
-                    if self.is_main_process:
-                        self.evaluator.log_train_scalars(
-                            iteration, ll1, loss, iter_start.elapsed_time(iter_end), stats
-                        )
-                        eval_results = self.evaluator.maybe_evaluate(iteration, testing_iterations)
-                        if iteration in stage_snapshot_iters:
-                            self._log_stage_snapshot(iteration, stats, eval_results)
-                        self._maybe_apply_adaptive_stage_extension(iteration, eval_results, stats)
-
-                if self.is_main_process and iteration in saving_iterations:
-                    print(f"\n[ITER {iteration}] Saving Gaussians")
-                    self.scene.save(iteration)
 
                 if iteration < self.prune_until_iter:
                     visibility_filter = render_pkg["visibility_filter"]
@@ -573,27 +568,37 @@ class TrainingEngine:
                         densify_interval *= fullres_densify_mult
                     if iteration > self.opt.densify_from_iter and iteration % densify_interval == 0:
                         do_densify = iteration < self.effective_densify_until_iter
-                        size_threshold = self._resolve_screen_size_threshold(iteration)
-                        try:
-                            self.gaussians.densify_and_prune(
-                                densify_grad,
-                                float(getattr(self.opt, "prune_opacity_threshold", 0.005)),
-                                self.scene.cameras_extent,
-                                size_threshold,
-                                radii,
-                                do_densify=do_densify,
-                                min_visibility=int(getattr(self.opt, "prune_min_visibility", 0)),
-                                grad_threshold=float(getattr(self.opt, "prune_grad_threshold", 0.0)),
-                                grad_min_denom=float(getattr(self.opt, "prune_grad_min_denom", 1.0)),
-                            )
-                        except RuntimeError as e:
-                            if "out of memory" in str(e).lower():
+                        in_late_prune = iteration >= self.prune_only_from_iter
+                        if do_densify or in_late_prune:
+                            if (not do_densify) and (not self._logged_prune_only) and self.is_main_process:
                                 print(
-                                    f"\n[ITER {iteration}] Densify OOM; skip densify this round and continue training."
+                                    f"\n[Prune] prune-only from iter {iteration}: no clone/split, "
+                                    "oversized screen/world prune disabled"
                                 )
-                                torch.cuda.empty_cache()
-                            else:
-                                raise
+                                self._logged_prune_only = True
+                            size_threshold = self._resolve_screen_size_threshold(
+                                iteration, do_densify=do_densify
+                            )
+                            try:
+                                self.gaussians.densify_and_prune(
+                                    densify_grad,
+                                    float(getattr(self.opt, "prune_opacity_threshold", 0.005)),
+                                    self.scene.cameras_extent,
+                                    size_threshold,
+                                    radii,
+                                    do_densify=do_densify,
+                                    min_visibility=int(getattr(self.opt, "prune_min_visibility", 0)),
+                                    grad_threshold=float(getattr(self.opt, "prune_grad_threshold", 0.0)),
+                                    grad_min_denom=float(getattr(self.opt, "prune_grad_min_denom", 1.0)),
+                                )
+                            except RuntimeError as e:
+                                if "out of memory" in str(e).lower():
+                                    print(
+                                        f"\n[ITER {iteration}] Densify OOM; skip densify this round and continue training."
+                                    )
+                                    torch.cuda.empty_cache()
+                                else:
+                                    raise
                     if iteration < self.effective_densify_until_iter and (
                         iteration % self.opt.opacity_reset_interval == 0
                         or (self.dataset.white_background and iteration == self.opt.densify_from_iter)
@@ -632,6 +637,29 @@ class TrainingEngine:
                     else:
                         self.gaussians.optimizer.step()
                         self.gaussians.optimizer.zero_grad(set_to_none=True)
+
+                point_count = int(self.gaussians.get_xyz.shape[0])
+                stats["scene/total_points"] = float(point_count)
+                if max_gaussians > 0:
+                    stats["scene/gaussian_budget"] = float(max_gaussians)
+                    stats["scene/budget_utilization"] = point_count / float(max_gaussians)
+
+                with torch.no_grad():
+                    eval_results = {}
+                    if self.is_main_process:
+                        self.evaluator.log_train_scalars(
+                            iteration, ll1, loss, iter_start.elapsed_time(iter_end), stats
+                        )
+                        eval_results = self.evaluator.maybe_evaluate(iteration, testing_iterations)
+                        if iteration in stage_snapshot_iters:
+                            self._log_stage_snapshot(iteration, stats, eval_results)
+                        self._maybe_apply_adaptive_stage_extension(iteration, eval_results, stats)
+                    if self.is_main_process and iteration == self.opt.iterations and progress_bar is not None:
+                        progress_bar.close()
+
+                if self.is_main_process and iteration in saving_iterations:
+                    print(f"\n[ITER {iteration}] Saving Gaussians")
+                    self.scene.save(iteration)
 
                 if self.is_main_process and iteration in checkpoint_iterations:
                     print(f"\n[ITER {iteration}] Saving Checkpoint")

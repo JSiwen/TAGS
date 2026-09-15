@@ -111,9 +111,10 @@ class OptimizationParams(ParamGroup):
         # Lifetime visibility count floor. 0 disables. Points below this are pruned.
         self.prune_min_visibility = 0
         # Screen-space radius prune threshold.
-        #   < 0 : legacy behavior (20 only after opacity_reset_interval)
+        #   < 0 : legacy behavior (20 only after opacity_reset_interval, densify only)
         #   = 0 : disable screen-size pruning
-        #   > 0 : always prune radii above this value while pruning is active
+        #   > 0 : prune radii above this value while densifying
+        # Oversized prune is always disabled in prune-only (no clone/split) mode.
         self.prune_max_screen_size = -1.0
         # Mean position-gradient floor used as a contribution gate. 0 disables.
         self.prune_grad_threshold = 0.0
@@ -125,7 +126,7 @@ class OptimizationParams(ParamGroup):
         self.prune_only_from_fraction = 0.0
         self.prune_only_from_iter = 0
         # If > 0, overrides prune_until_iter as floor(iterations * fraction).
-        # Default 0 keeps prune_until_iter = iterations (prune through the end).
+        # Default 0 keeps prune_until_iter = densify_until (legacy 3DGS/E2).
         self.prune_until_fraction = 0.0
         self.prune_until_iter = 0
         self.depth_l1_weight_init = 1.0

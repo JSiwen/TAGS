@@ -1,19 +1,26 @@
-# E3: vr_room pruning-strategy ablation.
+# E3 v2: vr_room pruning-strategy ablation.
 #
-# Phase A — single-seed screening (default seed=0):
+# Fixes vs v1: prune-only no longer applies oversized screen/world prune;
+# eval/snapshots run after densify/prune; test evals include 10k/18k/19.5k.
+# All screen runs use a 2M safety cap (E2 budget) so 3080 training stays feasible.
+#
+# Phase A — single-seed screening (default seed=0), all factors:
+#   .\scripts\run_vr_room_e3_prune_ablation.ps1
+#
+# Selected profiles:
+#   $env:E3_PROFILES = "opacity_0.005,opacity_0.01,densify_0.50,densify_0.80"
 #   .\scripts\run_vr_room_e3_prune_ablation.ps1
 #
 # Phase B — top-2 configs x 3 seeds:
 #   $env:E3_PHASE = "multiseed"
-#   $env:E3_TOP_CONFIGS = "opacity_0.01,densify_0.50"
+#   $env:E3_TOP_CONFIGS = "densify_0.80,opacity_0.01"
 #   .\scripts\run_vr_room_e3_prune_ablation.ps1
 #
-# Selected profiles only:
-#   $env:E3_PROFILES = "opacity_0.005,opacity_0.01,densify_0.50"
-#   .\scripts\run_vr_room_e3_prune_ablation.ps1
-#
-# After training, FPS + gate summary:
+# After training:
 #   python scripts\summarize_vr_room_e3.py --measure-fps 1
+#
+# Outputs: output/vr_room_e3_v2_<profile>/  (override with E3_RUN_TAG)
+# Resume skips completed 30k plys unless E3_SKIP_COMPLETED=0.
 #
 # Resume / checkpoints:
 #   - If point_cloud/iteration_30000 exists, the case is skipped (unless E3_SKIP_COMPLETED=0).
@@ -40,6 +47,14 @@ $checkpointIterations = if ($env:E3_CHECKPOINT_ITERS) {
     # Dense cadence for safer resume (every 3k through 30k).
     @("3000", "6000", "9000", "12000", "15000", "18000", "21000", "24000", "27000", "30000")
 }
+$maxGaussiansOverride = 0
+if ($env:E3_MAX_GAUSSIANS) {
+    $maxGaussiansOverride = [int]$env:E3_MAX_GAUSSIANS.Trim()
+    if ($maxGaussiansOverride -lt 0) {
+        throw "E3_MAX_GAUSSIANS must be >= 0, got $maxGaussiansOverride"
+    }
+}
+$runTag = if ($env:E3_RUN_TAG) { $env:E3_RUN_TAG.Trim() } else { "v2" }
 
 function Get-LatestCheckpoint {
     param([string]$ModelDir)
@@ -66,10 +81,11 @@ function Get-BaseProfile {
         MaxScreenSize = "-1"
         GradThreshold = "0.0"
         GradMinDenom = "1.0"
+        # E2-like densify horizon (18k), then last 20% prune-only.
         DensifyUntilFraction = "0.6"
-        PruneOnlyFromFraction = "0.0"
+        PruneOnlyFromFraction = "0.80"
         PruneUntilFraction = "1.0"
-        MaxGaussians = "0"
+        MaxGaussians = "2000000"
     }
 }
 
@@ -100,7 +116,7 @@ function Get-AllProfiles {
         $profiles["grad_$grad"] = $p
     }
 
-    foreach ($frac in @("0.50", "0.65", "0.80", "0.90")) {
+    foreach ($frac in @("0.50", "0.65", "0.80")) {
         $p = Get-BaseProfile
         $p.DensifyUntilFraction = $frac
         $p.PruneOnlyFromFraction = $frac
@@ -108,23 +124,77 @@ function Get-AllProfiles {
         $profiles["densify_$frac"] = $p
     }
 
-    # Promising combo from E2: early densify stop + mild opacity raise, optional 2M safety cap.
+    # Last 10% prune-only, densify follows the E2 60% horizon.
+    $late10 = Get-BaseProfile
+    $late10.PruneOnlyFromFraction = "0.90"
+    $profiles["lateprune_0.90"] = $late10
+
     $comboA = Get-BaseProfile
     $comboA.Opacity = "0.01"
     $comboA.DensifyUntilFraction = "0.50"
     $comboA.PruneOnlyFromFraction = "0.50"
-    $comboA.PruneUntilFraction = "1.0"
     $profiles["combo_opacity0.01_densify0.50"] = $comboA
 
     $comboB = Get-BaseProfile
     $comboB.Opacity = "0.01"
-    $comboB.DensifyUntilFraction = "0.65"
-    $comboB.PruneOnlyFromFraction = "0.65"
-    $comboB.PruneUntilFraction = "1.0"
-    $comboB.MaxGaussians = "2000000"
-    $profiles["combo_opacity0.01_densify0.65_cap2m"] = $comboB
+    $comboB.DensifyUntilFraction = "0.80"
+    $comboB.PruneOnlyFromFraction = "0.80"
+    $profiles["combo_opacity0.01_densify0.80"] = $comboB
+
+    $comboC = Get-BaseProfile
+    $comboC.Opacity = "0.02"
+    $comboC.DensifyUntilFraction = "0.50"
+    $comboC.PruneOnlyFromFraction = "0.50"
+    $profiles["combo_opacity0.02_densify0.50"] = $comboC
+
+    $comboD = Get-BaseProfile
+    $comboD.Opacity = "0.02"
+    $comboD.DensifyUntilFraction = "0.65"
+    $comboD.PruneOnlyFromFraction = "0.65"
+    $profiles["combo_opacity0.02_densify0.65"] = $comboD
 
     return $profiles
+}
+
+function Copy-Profile {
+    param($Profile)
+    $copy = @{}
+    foreach ($key in $Profile.Keys) {
+        $copy[$key] = $Profile[$key]
+    }
+    return $copy
+}
+
+function Get-CapSuffix([int]$Budget) {
+    if ($Budget -le 0) { return "" }
+    if ($Budget % 1000000 -eq 0) { return "cap$($Budget / 1000000)m" }
+    $millions = ($Budget / 1000000.0).ToString(
+        "0.##", [System.Globalization.CultureInfo]::InvariantCulture
+    )
+    return "cap${millions}m"
+}
+
+function Apply-MaxGaussiansCap {
+    param(
+        [System.Collections.Specialized.OrderedDictionary]$Profiles,
+        [int]$Budget
+    )
+    if ($Budget -le 0) { return $Profiles }
+    $suffix = Get-CapSuffix $Budget
+    $capped = [ordered]@{}
+    foreach ($name in $Profiles.Keys) {
+        $profile = Copy-Profile $Profiles[$name]
+        $existing = 0
+        if ($profile.MaxGaussians) { $existing = [int]$profile.MaxGaussians }
+        if ($existing -eq $Budget) {
+            $capped[$name] = $profile
+            continue
+        }
+        $profile.MaxGaussians = "$Budget"
+        $baseName = $name -replace '_cap[\d.]+m$', ''
+        $capped["${baseName}_$suffix"] = $profile
+    }
+    return $capped
 }
 
 function Resolve-SelectedProfiles {
@@ -153,15 +223,23 @@ function Resolve-SelectedProfiles {
 
 $allProfiles = Get-AllProfiles
 $profiles = Resolve-SelectedProfiles -All $allProfiles
+$profiles = Apply-MaxGaussiansCap -Profiles $profiles -Budget $maxGaussiansOverride
 
-Write-Host "[E3] phase=$phase profiles=$($profiles.Keys -join ', ') seeds=$($seedList -join ',')"
+Write-Host "[E3] phase=$phase tag=$runTag profiles=$($profiles.Keys -join ', ') seeds=$($seedList -join ',')"
+if ($maxGaussiansOverride -gt 0) {
+    Write-Host "[E3] E2-style Gaussian cap E3_MAX_GAUSSIANS=$maxGaussiansOverride"
+}
 
 foreach ($name in $profiles.Keys) {
     $profile = $profiles[$name]
     foreach ($seed in $seedList) {
-        $caseName = if ($phase -eq "multiseed") { "vr_room_e3_${name}_seed$seed" } else { "vr_room_e3_${name}" }
+        $caseName = if ($phase -eq "multiseed") {
+            "vr_room_e3_${runTag}_${name}_seed$seed"
+        } else {
+            "vr_room_e3_${runTag}_${name}"
+        }
         if ($phase -ne "multiseed" -and $seed -ne 0) {
-            $caseName = "vr_room_e3_${name}_seed$seed"
+            $caseName = "vr_room_e3_${runTag}_${name}_seed$seed"
         }
         $modelDir = Join-Path $ROOT "output\$caseName"
         $finalPly = Join-Path $modelDir "point_cloud\iteration_30000\point_cloud.ply"
@@ -236,19 +314,20 @@ foreach ($name in $profiles.Keys) {
             "--geo_prior_warmup_until", "4000",
             "--geo_prior_decay_start", "10000",
             "--geo_prior_decay_until", "20000",
-            "--live_stage_iterations", "7000,10000,15000,18000,24000,30000",
-            "--test_iterations", "7000", "15000", "24000", "30000",
+            "--live_stage_iterations", "7000,10000,15000,18000,19500,21000,24000,30000",
+            "--test_iterations", "7000", "10000", "15000", "18000", "19500", "24000", "30000",
             "--save_iterations", "30000",
             "--checkpoint_iterations"
         ) + $checkpointIterations + @(
             "--disable_viewer"
         )
 
+        $capNote = if ([int]$profile.MaxGaussians -gt 0) { " max_gaussians=$($profile.MaxGaussians)" } else { "" }
         if ($null -ne $resumeCkpt) {
             $trainArgs += @("--start_checkpoint", "$($resumeCkpt.Path)")
-            Write-Host "[E3] Resume $caseName from chkpnt$($resumeCkpt.Iteration) ($($resumeCkpt.Path))"
+            Write-Host "[E3] Resume $caseName from chkpnt$($resumeCkpt.Iteration) ($($resumeCkpt.Path))$capNote"
         } else {
-            Write-Host "[E3] Starting $caseName from scratch"
+            Write-Host "[E3] Starting $caseName from scratch$capNote"
         }
 
         $env:TAGGS_CPU_KNN_INIT = "1"
@@ -263,6 +342,8 @@ foreach ($name in $profiles.Keys) {
             resume_checkpoint = if ($null -ne $resumeCkpt) { $resumeCkpt.Path } else { $null }
             resume_iteration = if ($null -ne $resumeCkpt) { $resumeCkpt.Iteration } else { $null }
             checkpoint_iterations = $checkpointIterations
+            e2_max_gaussians_override = $maxGaussiansOverride
+            run_tag = $runTag
         }
         ($meta | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $modelDir "e3_profile.json") -Encoding UTF8
 

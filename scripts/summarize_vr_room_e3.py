@@ -4,9 +4,12 @@
 import argparse
 import csv
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 DEFAULT_UNLIMITED = {
@@ -42,7 +45,7 @@ def load_json(path):
     p = Path(path)
     if not p.is_file():
         return None
-    return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(p.read_text(encoding="utf-8-sig"))
 
 
 def summarize_case(case_dir):
@@ -93,7 +96,13 @@ def measure_fps(case_dir, python_bin, warmup, repeats):
         "--json-out",
         str(out),
     ]
-    subprocess.run(cmd, check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO_ROOT), env["PYTHONPATH"]] if env.get("PYTHONPATH") else [str(REPO_ROOT)]
+    )
+    env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    env["TAGGS_CPU_KNN_INIT"] = env.get("TAGGS_CPU_KNN_INIT", "1")
+    subprocess.run(cmd, check=True, cwd=str(REPO_ROOT), env=env)
     return load_json(out)
 
 
@@ -164,6 +173,7 @@ def write_csv(path, cases):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", default="output")
+    parser.add_argument("--case-glob", default="vr_room_e3_v2_*")
     parser.add_argument("--unlimited-reference", default="output/vr_room_dn_reference.json")
     parser.add_argument("--dn-reference", default="output/vr_room_dn_reference.json")
     parser.add_argument("--unlimited-case", default="output/vr_room_indoor_sensor_depth")
@@ -179,7 +189,7 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.output_root)
-    case_dirs = sorted(path for path in root.glob("vr_room_e3_*") if path.is_dir())
+    case_dirs = sorted(path for path in root.glob(args.case_glob) if path.is_dir())
     unlimited_metrics = dict(DEFAULT_UNLIMITED)
     unlimited_dir = Path(args.unlimited_case)
     if unlimited_dir.is_dir():
@@ -204,6 +214,10 @@ def main():
         (unlimited_dir / "fps_benchmark.json").write_text(
             json.dumps(fps_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+    else:
+        fps_payload = load_json(unlimited_dir / "fps_benchmark.json")
+        if fps_payload and fps_payload.get("fps"):
+            baseline_fps = float(fps_payload["fps"])
 
     cases = []
     for case_dir in case_dirs:
