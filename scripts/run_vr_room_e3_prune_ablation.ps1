@@ -16,8 +16,17 @@
 #   $env:E3_TOP_CONFIGS = "densify_0.80,opacity_0.01"
 #   .\scripts\run_vr_room_e3_prune_ablation.ps1
 #
+# Wave 4 orthogonal screen (seed=0; keeps v2 names, new profiles only):
+#   $env:E3_PROFILES = "combo_opacity0.02_densify0.65,densify0.50_pruneonly0.80,densify0.60_pruneonly0.60,combo_opacity0.02_densify0.50_pruneonly0.80,combo_opacity0.02_densify0.60_pruneonly0.60"
+#   .\scripts\run_vr_room_e3_prune_ablation.ps1
+#
+# Cap isolation later:
+#   $env:E3_RUN_TAG = "v3cap"
+#   $env:E3_PROFILES = "combo_opacity0.02_densify0.50,e2_style_cap2m"
+#   $env:E3_MAX_GAUSSIANS = "2500000"   # or "0" to force uncap
+#
 # After training:
-#   python scripts\summarize_vr_room_e3.py --measure-fps 1
+#   python scripts\summarize_vr_room_e3.py --measure-fps 1 --fps-warmup 10 --fps-repeats 30
 #
 # Outputs: output/vr_room_e3_v2_<profile>/  (override with E3_RUN_TAG)
 # Resume skips completed 30k plys unless E3_SKIP_COMPLETED=0.
@@ -48,13 +57,17 @@ $checkpointIterations = if ($env:E3_CHECKPOINT_ITERS) {
     @("3000", "6000", "9000", "12000", "15000", "18000", "21000", "24000", "27000", "30000")
 }
 $maxGaussiansOverride = 0
-if ($env:E3_MAX_GAUSSIANS) {
+$capOverrideSet = $false
+if ($null -ne $env:E3_MAX_GAUSSIANS -and $env:E3_MAX_GAUSSIANS.Trim() -ne "") {
+    $capOverrideSet = $true
     $maxGaussiansOverride = [int]$env:E3_MAX_GAUSSIANS.Trim()
     if ($maxGaussiansOverride -lt 0) {
         throw "E3_MAX_GAUSSIANS must be >= 0, got $maxGaussiansOverride"
     }
 }
 $runTag = if ($env:E3_RUN_TAG) { $env:E3_RUN_TAG.Trim() } else { "v2" }
+$evalIterations = @("7000", "10000", "15100", "18100", "19500", "21100", "24000", "30000")
+$liveStageIterations = ($evalIterations -join ",")
 
 function Get-LatestCheckpoint {
     param([string]$ModelDir)
@@ -153,6 +166,35 @@ function Get-AllProfiles {
     $comboD.PruneOnlyFromFraction = "0.65"
     $profiles["combo_opacity0.02_densify0.65"] = $comboD
 
+    # Orthogonal schedule corners. densify_* above still couples both knobs.
+    $orthA = Get-BaseProfile
+    $orthA.DensifyUntilFraction = "0.50"
+    $orthA.PruneOnlyFromFraction = "0.80"
+    $profiles["densify0.50_pruneonly0.80"] = $orthA
+
+    $orthB = Get-BaseProfile
+    $orthB.DensifyUntilFraction = "0.60"
+    $orthB.PruneOnlyFromFraction = "0.60"
+    $profiles["densify0.60_pruneonly0.60"] = $orthB
+
+    $orthC = Get-BaseProfile
+    $orthC.Opacity = "0.02"
+    $orthC.DensifyUntilFraction = "0.50"
+    $orthC.PruneOnlyFromFraction = "0.80"
+    $profiles["combo_opacity0.02_densify0.50_pruneonly0.80"] = $orthC
+
+    $orthD = Get-BaseProfile
+    $orthD.Opacity = "0.02"
+    $orthD.DensifyUntilFraction = "0.60"
+    $orthD.PruneOnlyFromFraction = "0.60"
+    $profiles["combo_opacity0.02_densify0.60_pruneonly0.60"] = $orthD
+
+    $e2style = Get-BaseProfile
+    $e2style.DensifyUntilFraction = "0.6"
+    $e2style.PruneOnlyFromFraction = "0.6"
+    $e2style.PruneUntilFraction = "0.6"
+    $profiles["e2_style_cap2m"] = $e2style
+
     return $profiles
 }
 
@@ -177,13 +219,19 @@ function Get-CapSuffix([int]$Budget) {
 function Apply-MaxGaussiansCap {
     param(
         [System.Collections.Specialized.OrderedDictionary]$Profiles,
-        [int]$Budget
+        [int]$Budget,
+        [bool]$ForceOverride = $false
     )
-    if ($Budget -le 0) { return $Profiles }
-    $suffix = Get-CapSuffix $Budget
+    if (-not $ForceOverride) { return $Profiles }
     $capped = [ordered]@{}
     foreach ($name in $Profiles.Keys) {
         $profile = Copy-Profile $Profiles[$name]
+        $baseName = $name -replace '_cap[\d.]+m$', '' -replace '_uncap$', ''
+        if ($Budget -le 0) {
+            $profile.MaxGaussians = "0"
+            $capped["${baseName}_uncap"] = $profile
+            continue
+        }
         $existing = 0
         if ($profile.MaxGaussians) { $existing = [int]$profile.MaxGaussians }
         if ($existing -eq $Budget) {
@@ -191,10 +239,51 @@ function Apply-MaxGaussiansCap {
             continue
         }
         $profile.MaxGaussians = "$Budget"
-        $baseName = $name -replace '_cap[\d.]+m$', ''
+        $suffix = Get-CapSuffix $Budget
         $capped["${baseName}_$suffix"] = $profile
     }
     return $capped
+}
+
+function Get-ProfileSettingValue {
+    param($Settings, [string]$Key)
+    if ($null -eq $Settings) { return $null }
+    if ($Settings -is [hashtable] -or $Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains($Key)) { return [string]$Settings[$Key] }
+        return $null
+    }
+    $prop = $Settings.PSObject.Properties[$Key]
+    if ($null -eq $prop) { return $null }
+    return [string]$prop.Value
+}
+
+function Assert-ResumeProfileMatches {
+    param(
+        [string]$ModelDir,
+        [string]$Name,
+        [int]$Seed,
+        $Profile
+    )
+    $metaPath = Join-Path $ModelDir "e3_profile.json"
+    if (-not (Test-Path $metaPath)) { return }
+    $existing = Get-Content -Path $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($existing.profile -and [string]$existing.profile -ne $Name) {
+        throw "E3 resume mismatch in $ModelDir : stored profile '$($existing.profile)' != '$Name'"
+    }
+    if ($null -ne $existing.seed -and [int]$existing.seed -ne $Seed) {
+        throw "E3 resume mismatch in $ModelDir : stored seed $($existing.seed) != $Seed"
+    }
+    $keys = @(
+        "Opacity", "MinVisibility", "MaxScreenSize", "GradThreshold", "GradMinDenom",
+        "DensifyUntilFraction", "PruneOnlyFromFraction", "PruneUntilFraction", "MaxGaussians"
+    )
+    foreach ($key in $keys) {
+        $expected = [string]$Profile[$key]
+        $actual = Get-ProfileSettingValue -Settings $existing.settings -Key $key
+        if ($null -ne $actual -and $actual -ne $expected) {
+            throw "E3 resume mismatch in $ModelDir : settings.$key '$actual' != '$expected'"
+        }
+    }
 }
 
 function Resolve-SelectedProfiles {
@@ -223,11 +312,11 @@ function Resolve-SelectedProfiles {
 
 $allProfiles = Get-AllProfiles
 $profiles = Resolve-SelectedProfiles -All $allProfiles
-$profiles = Apply-MaxGaussiansCap -Profiles $profiles -Budget $maxGaussiansOverride
+$profiles = Apply-MaxGaussiansCap -Profiles $profiles -Budget $maxGaussiansOverride -ForceOverride $capOverrideSet
 
 Write-Host "[E3] phase=$phase tag=$runTag profiles=$($profiles.Keys -join ', ') seeds=$($seedList -join ',')"
-if ($maxGaussiansOverride -gt 0) {
-    Write-Host "[E3] E2-style Gaussian cap E3_MAX_GAUSSIANS=$maxGaussiansOverride"
+if ($capOverrideSet) {
+    Write-Host "[E3] Gaussian cap override E3_MAX_GAUSSIANS=$maxGaussiansOverride"
 }
 
 foreach ($name in $profiles.Keys) {
@@ -243,6 +332,9 @@ foreach ($name in $profiles.Keys) {
         }
         $modelDir = Join-Path $ROOT "output\$caseName"
         $finalPly = Join-Path $modelDir "point_cloud\iteration_30000\point_cloud.ply"
+        if (Test-Path $modelDir) {
+            Assert-ResumeProfileMatches -ModelDir $modelDir -Name $name -Seed $seed -Profile $profile
+        }
         if ($skipCompleted -and (Test-Path $finalPly)) {
             Write-Host "[E3] Skip completed $caseName"
             continue
@@ -314,8 +406,9 @@ foreach ($name in $profiles.Keys) {
             "--geo_prior_warmup_until", "4000",
             "--geo_prior_decay_start", "10000",
             "--geo_prior_decay_until", "20000",
-            "--live_stage_iterations", "7000,10000,15000,18000,19500,21000,24000,30000",
-            "--test_iterations", "7000", "10000", "15000", "18000", "19500", "24000", "30000",
+            "--live_stage_iterations", $liveStageIterations,
+            "--test_iterations"
+        ) + $evalIterations + @(
             "--save_iterations", "30000",
             "--checkpoint_iterations"
         ) + $checkpointIterations + @(
@@ -343,7 +436,9 @@ foreach ($name in $profiles.Keys) {
             resume_iteration = if ($null -ne $resumeCkpt) { $resumeCkpt.Iteration } else { $null }
             checkpoint_iterations = $checkpointIterations
             e2_max_gaussians_override = $maxGaussiansOverride
+            cap_override_set = $capOverrideSet
             run_tag = $runTag
+            eval_iterations = $evalIterations
         }
         ($meta | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $modelDir "e3_profile.json") -Encoding UTF8
 
@@ -367,4 +462,4 @@ foreach ($name in $profiles.Keys) {
     }
 }
 
-Write-Host "[E3] Requested runs complete. Next: python scripts\summarize_vr_room_e3.py --measure-fps 1"
+Write-Host "[E3] Requested runs complete. Next: python scripts\summarize_vr_room_e3.py --measure-fps 1 --fps-warmup 10 --fps-repeats 30"

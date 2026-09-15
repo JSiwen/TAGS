@@ -17,20 +17,26 @@ E2 表明：约 1.0–1.5M 硬预算已能在 PSNR/SSIM 上超过 DN。E3 验证
 
 ## 通过标准
 
+质量门控 `quality_pass`（可在未测 FPS 时判定）：
+
 1. Gaussian 数量 ≤ **2,000,000**
 2. 相对无限制 PSNR 下降 ≤ **0.3 dB**（即 PSNR ≥ 约 27.236）
 3. PSNR 仍高于 DN（> **26.4**）
-4. 渲染 FPS 相对无限制至少提升 **50%**（≥ 1.5×）
+
+完整门控 `full_pass` 另需：
+
+4. 渲染吞吐相对无限制至少提升 **50%**（test split 遍历 FPS ≥ 1.5×）。未测 FPS 记为 `fps_pending`，不把质量项判失败。
+
+DN 的 LPIPS（0.134）实现/评测条件不同，只作外部参考，不作为硬门控。
 
 ## 代码回溯
 
-E3 修改前完整源码标签：
+| 标签 | 含义 |
+|------|------|
+| `pre-e3` | E3 修改前（post-E2） |
+| `e3-v2-wave3` | v2 协议 + Wave 3 筛选完成时的代码；正交日程/评测硬化之前 |
 
-```text
-pre-e3
-```
-
-对应提交说明：`snapshot: preserve pre-E3 TAGSs codebase (post-E2)`。
+对应提交：`snapshot: preserve E3 v2 Wave 3 screening codebase`。回滚：`git checkout e3-v2-wave3`。
 
 ## v1 失败原因（已在 v2 修复）
 
@@ -44,8 +50,10 @@ v2 修复：
 
 - prune-only 阶段关闭 oversized 屏幕/世界剪枝，只保留 opacity / visibility / gradient 剪枝。
 - 评估与 stage snapshot 改到 densify/prune **之后**。
-- 评估点：7000, 10000, 15000, 18000, 19500, 24000, 30000。
+- 评估点（v2）：7000, 10000, 15000, 18000, 19500, 24000, 30000。
 - 输出目录改为 `output/vr_room_e3_v2_<profile>/`，不与已崩盘的 v1 结果混用。
+
+v2 中间评估仍会撞上 densify 期内的 `opacity_reset`（15000 / 18000），test PSNR 可短暂掉到 ~7 dB；**30k 最终指标可信**。Wave 4 起评估改为 15100 / 18100 / 21100，并在 reset 时打日志。
 
 ## 新增训练旋钮
 
@@ -77,11 +85,24 @@ v2 修复：
 2. **最低可见次数**：`minvis_1` / `minvis_3` / `minvis_5`
 3. **屏幕投影面积**（仅 densify 期生效）：`screen_0` / `screen_10` / `screen_20` / `screen_40`
 4. **梯度贡献**：`grad_1e-7` / `grad_5e-7` / `grad_1e-6`
-5. **densify 停止 + 其后只剪不增**：`densify_0.50` / `densify_0.65` / `densify_0.80`（80% = 最后 20%）
+5. **densify 停止 + prune-only 起点耦合**（历史命名，同时改两个旋钮）：`densify_0.50` / `densify_0.65` / `densify_0.80`
 6. **最后 10% 只剪不增**：`lateprune_0.90`（densify 仍到 60%）
-7. **组合**：`combo_opacity0.01_densify0.50`、`combo_opacity0.01_densify0.80`
+7. **组合**：`combo_opacity0.01_densify0.50`、`combo_opacity0.01_densify0.80`、`combo_opacity0.02_densify0.50`、`combo_opacity0.02_densify0.65`
 
-共 19 个单种子 case。
+Wave 3 实际完成 3/4 combo（缺 `combo_opacity0.02_densify0.65`）。`densify_*` 不是单因素：它把 densify 停止点与 prune-only 起点设成同一值。
+
+### Wave 4 正交日程（seed=0，补点）
+
+把 densify 停止与 prune-only 起点拆开。opacity=0.005 四角：
+
+| | prune-only = densify 结束（立即剪） | prune-only = 0.80（纯优化窗口） |
+|---|---|---|
+| densify 0.50 | 已有 `densify_0.50` | 新增 `densify0.50_pruneonly0.80` |
+| densify 0.60 | 新增 `densify0.60_pruneonly0.60` | 已有 `opacity_0.005`（基准 0.60/0.80） |
+
+opacity=0.02 四角：已有 `combo_opacity0.02_densify0.50`（0.50/0.50）；补 `combo_opacity0.02_densify0.50_pruneonly0.80`、`combo_opacity0.02_densify0.60_pruneonly0.60`，并以 `opacity_0.02` 作为 0.60/0.80 对照。另补缺失 combo `combo_opacity0.02_densify0.65`。
+
+E2 硬帽对照 profile：`e2_style_cap2m`（densify/prune 均在 60% 结束，2M cap，无后期 prune-only）。
 
 ## 推荐训练方案（3080）
 
@@ -111,54 +132,84 @@ $env:E3_PROFILES = "opacity_0.01,opacity_0.02,minvis_1,minvis_3,minvis_5,screen_
 ### Wave 3 — 组合
 
 ```powershell
-$env:E3_PROFILES = "combo_opacity0.01_densify0.50,combo_opacity0.01_densify0.80"
+$env:E3_PROFILES = "combo_opacity0.01_densify0.50,combo_opacity0.01_densify0.80,combo_opacity0.02_densify0.50"
 .\scripts\run_vr_room_e3_prune_ablation.ps1
 ```
 
-也可一次跑完全矩阵（已完成的会自动跳过）：
+### Wave 4 — 正交日程筛选（seed=0）
+
+新 profile 名称不覆盖已有 v2 目录。评估点改为 7k / 10k / 15.1k / 18.1k / 19.5k / 21.1k / 24k / 30k。已完成的 case 会跳过。
 
 ```powershell
-Remove-Item Env:E3_PROFILES -ErrorAction SilentlyContinue
+$env:E3_PROFILES = "combo_opacity0.02_densify0.65,densify0.50_pruneonly0.80,densify0.60_pruneonly0.60,combo_opacity0.02_densify0.50_pruneonly0.80,combo_opacity0.02_densify0.60_pruneonly0.60"
+.\scripts\run_vr_room_e3_prune_ablation.ps1
+```
+
+第一闸门：淘汰 PSNR drop >0.3 dB，或在点数、PSNR、FPS 上被支配的配置。进入 cap / 多种子前只保留 Pareto 候选。
+
+### Wave 4b — 硬帽归因（第一闸门之后）
+
+对筛选出的最佳日程与 `e2_style_cap2m` 做同 seed=0 对照。3080 先 2.0M，再 2.5M；仅当 2.5M 显存安全且点数仍顶帽时才尝试 `$env:E3_MAX_GAUSSIANS = "0"`。出现 OOM 或峰值显存持续 >90% 则停止。独立 tag，避免覆盖 v2：
+
+```powershell
+$env:E3_RUN_TAG = "v3cap"
+$env:E3_PROFILES = "combo_opacity0.02_densify0.50,e2_style_cap2m"
+$env:E3_MAX_GAUSSIANS = "2500000"
 .\scripts\run_vr_room_e3_prune_ablation.ps1
 ```
 
 ### 汇总
 
 ```powershell
-python scripts\summarize_vr_room_e3.py --measure-fps 1
+python scripts\summarize_vr_room_e3.py --measure-fps 1 --fps-warmup 10 --fps-repeats 30
 ```
 
-输出：`output/vr_room_e3_v2_<profile>/`。
+输出：`output/vr_room_e3_v2_<profile>/`（`E3_RUN_TAG` 可改）。FPS 口径为 **test split 吞吐**（42 相机 × repeats），报告 mean/std 与 p50/p95 帧时，不是单视角交互帧率。
+
+Per-view NVS：
+
+```powershell
+python scripts\evaluate_nvs_per_view.py -m output\vr_room_e3_v2_<profile> --iteration 30000
+```
 
 ### 断点续训
 
 - 已有 `point_cloud/iteration_30000/point_cloud.ply` 则跳过。
 - 否则从最大 `chkpnt*.pth` 续训。
+- 若目录里已有 `e3_profile.json`，训练旋钮与当前 profile 不一致则拒绝续训。
 - 默认每 3k 存盘。强制重跑：`$env:E3_SKIP_COMPLETED = "0"`。
 
 ## 多种子复现（最优 2 个配置 × 3 种子）
 
-从 `output/vr_room_e3_summary.json` 的 `recommended_top2_for_multiseed` 取值。通过门控的优先；否则取 PSNR 下降最小且点数 ≤2M 的两个。
+正交筛选完成后再定 top2，不要预先锁死 `densify_0.50`。当前 Wave 3 单种子领先者是 `combo_opacity0.02_densify0.50`；第二种子候选等 Wave 4 四角结果。
+
+对 top2 与 `e2_style_cap2m` 统一跑 seeds 0/1/2。通过标准建议：每个 seed 点数 ≤2M；平均 PSNR drop ≤0.3 dB；最差 seed 不明显越界；FPS 95% 下界 ≥1.5×。若 top1–top2 平均 PSNR 差小于一个标准差，按点数 / p95 帧时 / 显存选更轻方案。
 
 ```powershell
 $env:E3_PHASE = "multiseed"
-$env:E3_TOP_CONFIGS = "densify_0.80,opacity_0.01"  # 替换为实际 top2
+$env:E3_TOP_CONFIGS = "combo_opacity0.02_densify0.50,<wave4_runner_up>"
 $env:E3_SEEDS = "0,1,2"
 .\scripts\run_vr_room_e3_prune_ablation.ps1
-python scripts\summarize_vr_room_e3.py --measure-fps 1
+python scripts\summarize_vr_room_e3.py --measure-fps 1 --fps-warmup 10 --fps-repeats 30
 ```
 
 ## 判读流程
 
-1. 先看 `num_points ≤ 2M` 与 `psnr_drop ≤ 0.3`。
-2. 确认 `beats_dn_psnr`。
-3. `fps_speedup_vs_unlimited ≥ 1.5`。
-4. 通过门控的配置中，优先选 **点数更低且 PSNR 下降更小** 者进入多种子。
-5. 与 E2 2.0M（PSNR 27.321）对照：E3 若点数更低且 PSNR 不更差，才说明剪枝日程优于单纯硬预算。
+1. 先看 `quality_pass`：`num_points ≤ 2M` 与 `psnr_drop ≤ 0.3`，以及 `beats_dn_psnr`。
+2. 再看 `full_pass` / `fps_status`。未测 FPS 为 pending。
+3. 通过质量门控的配置中，优先选 **点数更低且 PSNR 下降更小** 者进入多种子；top2 按唯一 profile 聚合。
+4. 与 `e2_style_cap2m` / E2 2.0M 对照：仅当 **相同 cap** 下日程更好，才能归因于剪枝日程；若无帽压不到 ≤2M，结论应写成「2M 安全帽 + 日程」联合方案。
+5. 15k/18k 若出现个位数 PSNR，先核对是否紧挨 opacity reset，不要当成永久崩盘。
 
 ## 结果记录
 
-实验完成后将表格追加到本节，并更新：
+### Wave 3（seed=0，v2，2026-09-15）
 
-- `output/vr_room_e3_summary.json`
-- `output/vr_room_e3_summary.csv`
+| Profile | Points | PSNR | ΔPSNR | FPS | × | Pass |
+|---------|-------:|-----:|------:|----:|--:|:----:|
+| combo_opacity0.02_densify0.50 | 1.587M | 27.422 | 0.114 | 193.6 | 2.36 | yes |
+| combo_opacity0.01_densify0.50 | 1.748M | 27.375 | 0.161 | 179.1 | 2.18 | yes |
+| combo_opacity0.01_densify0.80 | 1.915M | 27.153 | 0.382 | 137.4 | 1.67 | no |
+| combo_opacity0.02_densify0.65 | — | — | — | — | — | missing |
+
+汇总：`output/vr_room_e3_summary.json`、`output/vr_room_e3_summary.csv`。

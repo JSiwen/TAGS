@@ -603,6 +603,8 @@ class TrainingEngine:
                         iteration % self.opt.opacity_reset_interval == 0
                         or (self.dataset.white_background and iteration == self.opt.densify_from_iter)
                     ):
+                        if self.is_main_process:
+                            print(f"\n[Prune] opacity reset at iter {iteration}")
                         self.gaussians.reset_opacity()
 
                 sparse_stats = self.sparse_controller.apply(
