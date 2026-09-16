@@ -86,12 +86,13 @@ def measure_fps(views, gaussians, pipeline, background, warmup, repeats, use_tra
     if torch.cuda.is_available():
         peak_mem_mb = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
 
-    mean_ms = statistics.fmean(trial_ms)
+    # statistics.fmean is 3.8+; gaussian_splatting env is 3.7.
+    mean_ms = statistics.mean(trial_ms)
     return {
         "frames": frames,
         "elapsed_sec": total_elapsed,
         "fps": frames / max(total_elapsed, 1e-8),
-        "fps_mean": statistics.fmean(trial_fps),
+        "fps_mean": statistics.mean(trial_fps),
         "fps_std": statistics.pstdev(trial_fps) if len(trial_fps) > 1 else 0.0,
         "ms_per_frame": mean_ms,
         "ms_per_frame_mean": mean_ms,
