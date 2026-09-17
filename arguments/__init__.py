@@ -182,6 +182,12 @@ class ExperimentParams(ParamGroup):
         self.lpips_loss_start_iter = 16000
         self.lpips_loss_max_weight = 0.02
         self.lpips_loss_interval = 4
+        # linear: ramp init->final after start_iter; step: jump to final at start_iter.
+        self.lpips_loss_schedule = "linear"
+        # Multi-scale LPIPS pyramid (E4). Disabled by default.
+        self.enable_multiscale_lpips = False
+        self.lpips_multiscale_scales = "1.0,0.5,0.25"
+        self.lpips_multiscale_weights = "0.5,0.3,0.2"
 
         # Differentiable PSNR supervision. Minimizes a scaled log-MSE proxy,
         # which preserves PSNR ordering while keeping gradients well-scaled.

@@ -40,6 +40,10 @@ class ExperimentConfig:
     lpips_loss_start_iter: int
     lpips_loss_max_weight: float
     lpips_loss_interval: int
+    lpips_loss_schedule: str
+    enable_multiscale_lpips: bool
+    lpips_multiscale_scales: str
+    lpips_multiscale_weights: str
     psnr_loss_weight_init: float
     psnr_loss_weight_final: float
     psnr_loss_start_iter: int
@@ -170,6 +174,10 @@ class ExperimentConfig:
             lpips_loss_start_iter=args.lpips_loss_start_iter,
             lpips_loss_max_weight=args.lpips_loss_max_weight,
             lpips_loss_interval=args.lpips_loss_interval,
+            lpips_loss_schedule=args.lpips_loss_schedule,
+            enable_multiscale_lpips=args.enable_multiscale_lpips,
+            lpips_multiscale_scales=args.lpips_multiscale_scales,
+            lpips_multiscale_weights=args.lpips_multiscale_weights,
             psnr_loss_weight_init=args.psnr_loss_weight_init,
             psnr_loss_weight_final=args.psnr_loss_weight_final,
             psnr_loss_start_iter=args.psnr_loss_start_iter,

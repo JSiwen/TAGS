@@ -1,7 +1,8 @@
 import torch
+import torch.nn.functional as F
 
 from utils.loss_utils import l1_loss, ssim
-from lpipsPyTorch import lpips
+from lpipsPyTorch import get_lpips_criterion
 
 try:
     from fused_ssim import fused_ssim
@@ -10,12 +11,54 @@ except Exception:
     FUSED_SSIM_AVAILABLE = False
 
 
+def _parse_float_list(spec, default):
+    text = str(spec or "").strip()
+    if not text:
+        return list(default)
+    values = []
+    for token in text.replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        values.append(float(token))
+    return values if values else list(default)
+
+
+def _normalize_weights(weights):
+    total = sum(weights)
+    if total <= 0:
+        raise ValueError("LPIPS multiscale weights must sum to a positive value.")
+    return [weight / total for weight in weights]
+
+
 class LossBuilder:
     def __init__(self, opt, cfg, geo_prior, sparse_controller=None):
         self.opt = opt
         self.cfg = cfg
         self.geo_prior = geo_prior
         self.sparse_controller = sparse_controller
+        self._lpips_criterion = None
+        self._lpips_scales = None
+        self._lpips_scale_weights = None
+        if bool(getattr(self.cfg, "enable_multiscale_lpips", False)):
+            self._lpips_scales = _parse_float_list(
+                getattr(self.cfg, "lpips_multiscale_scales", "1.0,0.5,0.25"),
+                (1.0, 0.5, 0.25),
+            )
+            raw_weights = _parse_float_list(
+                getattr(self.cfg, "lpips_multiscale_weights", "0.5,0.3,0.2"),
+                (0.5, 0.3, 0.2),
+            )
+            if len(raw_weights) != len(self._lpips_scales):
+                raise ValueError(
+                    "lpips_multiscale_weights must match lpips_multiscale_scales length."
+                )
+            self._lpips_scale_weights = _normalize_weights(raw_weights)
+
+    def _ensure_lpips_criterion(self, device):
+        if self._lpips_criterion is None:
+            self._lpips_criterion = get_lpips_criterion("vgg", "0.1", device)
+        return self._lpips_criterion
 
     def _detail_weight(self, iteration):
         start_iter = max(0, int(getattr(self.cfg, "detail_loss_start_iter", 0)))
@@ -64,11 +107,42 @@ class LossBuilder:
         max_w = max(0.0, float(getattr(self.cfg, "lpips_loss_max_weight", 0.02)))
         init_w = max(0.0, min(init_w, max_w))
         final_w = max(0.0, min(final_w, max_w))
-        if iteration <= start_iter:
+        if iteration < start_iter:
             return init_w
+        schedule = str(getattr(self.cfg, "lpips_loss_schedule", "linear")).strip().lower()
+        if schedule == "step":
+            return final_w
         span = max(1, int(self.opt.iterations) - start_iter)
         progress = min(1.0, max(0.0, float(iteration - start_iter) / float(span)))
         return init_w + (final_w - init_w) * progress
+
+    def _resize_for_scale(self, image, scale):
+        if scale >= 1.0 - 1e-6:
+            return image
+        height = max(1, int(round(image.shape[-2] * scale)))
+        width = max(1, int(round(image.shape[-1] * scale)))
+        return F.interpolate(
+            image.unsqueeze(0),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=True,
+        ).squeeze(0)
+
+    def _compute_lpips_loss(self, image, gt_image):
+        criterion = self._ensure_lpips_criterion(image.device)
+        if not self._lpips_scales:
+            loss = criterion(image.unsqueeze(0), gt_image.unsqueeze(0))
+            return loss, {}
+
+        per_scale = {}
+        total = torch.tensor(0.0, device=image.device, dtype=image.dtype)
+        for scale, weight in zip(self._lpips_scales, self._lpips_scale_weights):
+            pred = self._resize_for_scale(image, scale)
+            target = self._resize_for_scale(gt_image, scale)
+            scale_loss = criterion(pred.unsqueeze(0), target.unsqueeze(0))
+            total = total + float(weight) * scale_loss
+            per_scale[f"train/lpips_scale_{scale:g}"] = float(scale_loss.item())
+        return total, per_scale
 
     def _psnr_weight(self, iteration):
         start_iter = max(0, int(getattr(self.cfg, "psnr_loss_start_iter", 0)))
@@ -86,7 +160,6 @@ class LossBuilder:
     def _psnr_loss(self, pred, target):
         mse = torch.mean((pred - target) * (pred - target)).clamp_min(1e-8)
         psnr_value = 20.0 * torch.log10(1.0 / torch.sqrt(mse))
-        # A positive, monotonic proxy for maximizing PSNR with usable scale.
         loss = torch.log1p(100.0 * mse)
         return loss, psnr_value
 
@@ -115,7 +188,6 @@ class LossBuilder:
         low_grad_mask = grad_mag <= threshold
         min_fraction = min(1.0, max(0.0, float(getattr(self.cfg, "color_align_min_mask_fraction", 0.20))))
         if float(low_grad_mask.float().mean().item()) < min_fraction:
-            # Fallback to global stats if low-gradient region is too small.
             low_grad_mask = torch.ones_like(low_grad_mask, dtype=torch.bool)
 
         ch_mean_losses = []
@@ -148,19 +220,26 @@ class LossBuilder:
 
         gt_image = viewpoint_cam.original_image.cuda()
         ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        lambda_dssim = float(getattr(self.opt, "lambda_dssim", 0.0))
+        if lambda_dssim > 0.0:
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
+            photo_loss = (1.0 - lambda_dssim) * ll1 + lambda_dssim * (1.0 - ssim_value)
+            ssim_scalar = float(ssim_value.item()) if hasattr(ssim_value, "item") else float(ssim_value)
+            lpips_proxy = float((0.7 * ll1 + 0.3 * (1.0 - ssim_value)).item())
         else:
-            ssim_value = ssim(image, gt_image)
+            photo_loss = ll1
+            ssim_scalar = float("nan")
+            lpips_proxy = float(ll1.item())
 
-        photo_loss = (1.0 - self.opt.lambda_dssim) * ll1 + self.opt.lambda_dssim * (1.0 - ssim_value)
         psnr_loss, psnr_value = self._psnr_loss(image, gt_image)
         stats = {
             "train/l1": float(ll1.item()),
-            "train/ssim": float(ssim_value.item()) if hasattr(ssim_value, "item") else float(ssim_value),
+            "train/ssim": ssim_scalar,
             "train/psnr": float(psnr_value.item()),
-            # Cheap proxy used by late-stage controller for per-view guard signals.
-            "train/lpips_proxy": float((0.7 * ll1 + 0.3 * (1.0 - ssim_value)).item()),
+            "train/lpips_proxy": lpips_proxy,
         }
         late_state = self._late_state(train_state)
 
@@ -192,7 +271,7 @@ class LossBuilder:
         lpips_w = self._lpips_weight(iteration)
         lpips_interval = max(1, int(getattr(self.cfg, "lpips_loss_interval", 4)))
         if lpips_w > 0 and (iteration % lpips_interval == 0):
-            lpips_loss = lpips(image.unsqueeze(0), gt_image.unsqueeze(0), net_type="vgg")
+            lpips_loss, lpips_scale_stats = self._compute_lpips_loss(image, gt_image)
             effective_lpips_w = (
                 lpips_w
                 * float(late_state.get("lpips_guard_multiplier", 1.0))
@@ -201,6 +280,7 @@ class LossBuilder:
             total = total + effective_lpips_w * lpips_loss
             stats["train/lpips_loss"] = float(lpips_loss.item())
             stats["train/lpips_weight"] = float(effective_lpips_w)
+            stats.update(lpips_scale_stats)
 
         color_align_w = self._color_align_weight(iteration)
         if color_align_w > 0:
