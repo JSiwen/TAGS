@@ -221,7 +221,7 @@ def evaluate_prescreen(delta, args):
     return {"passed": all(checks.values()), "checks": checks}
 
 
-def evaluate_final(case, baseline_case, delta, unlimited, args):
+def evaluate_final(case, baseline_case, delta, unlimited, args, unlimited_fps=None):
     reasons = []
     points_ok = case["num_points"] <= args.max_points
     if not points_ok:
@@ -249,8 +249,8 @@ def evaluate_final(case, baseline_case, delta, unlimited, args):
     fps = case.get("fps")
     fps_speedup = None
     fps_ok = None
-    if fps is not None and args.baseline_fps and args.baseline_fps > 0:
-        fps_speedup = fps / args.baseline_fps
+    if fps is not None and unlimited_fps and unlimited_fps > 0:
+        fps_speedup = fps / unlimited_fps
         fps_ok = fps_speedup >= args.min_fps_speedup
         if fps_ok is False:
             reasons.append(f"fps_speedup<{args.min_fps_speedup}")
@@ -277,21 +277,26 @@ def evaluate_final(case, baseline_case, delta, unlimited, args):
     }
 
 
-def evaluate_multiseed(profile_cases, baseline_by_seed, args):
+def evaluate_multiseed(profile_cases, baseline_by_seed, args, unlimited_fps=None):
     complete = [case for case in profile_cases if case.get("psnr") is not None]
     if len(complete) < 3:
-        return {"passed": False, "reason": "incomplete_seeds"}
+        return {"passed": False, "reason": "incomplete_seeds", "quality_passed": False, "fps_passed": False}
     deltas = []
     for case in complete:
         seed = int(case.get("seed", 0))
         baseline = baseline_by_seed.get(seed)
         if baseline is None:
-            return {"passed": False, "reason": f"missing_baseline_seed_{seed}"}
+            return {
+                "passed": False,
+                "reason": f"missing_baseline_seed_{seed}",
+                "quality_passed": False,
+                "fps_passed": False,
+            }
         deltas.append(compare_to_baseline(case, baseline))
     lpips_ratios = [delta["lpips_improve_ratio"] for delta in deltas]
     psnr_drops = [delta["psnr_drop"] for delta in deltas]
     ssim_drops = [delta["ssim_drop"] for delta in deltas]
-    checks = {
+    quality_checks = {
         "all_seeds_lpips_not_worse": all(delta["lpips_improve_abs"] >= 0 for delta in deltas),
         "mean_lpips_improve_ge_5pct": statistics.mean(lpips_ratios) >= args.gate_lpips_improve,
         "mean_psnr_drop_le_0_2db": statistics.mean(psnr_drops) <= args.gate_psnr_drop,
@@ -300,12 +305,40 @@ def evaluate_multiseed(profile_cases, baseline_by_seed, args):
         "worst_ssim_drop_le_0_003": max(ssim_drops) <= args.gate_ssim_drop_worst,
         "all_points_le_2m": all(case["num_points"] <= args.max_points for case in complete),
     }
+    fps_values = [case.get("fps") for case in complete]
+    fps_speedups = []
+    fps_checks = {}
+    if unlimited_fps and unlimited_fps > 0:
+        fps_speedups = [
+            fps / unlimited_fps for fps in fps_values if fps is not None
+        ]
+        fps_checks = {
+            "all_seeds_fps_present": all(fps is not None for fps in fps_values),
+            "all_seeds_fps_speedup_ge_min": all(
+                fps / unlimited_fps >= args.min_fps_speedup for fps in fps_values if fps is not None
+            )
+            if fps_speedups
+            else False,
+        }
+    else:
+        fps_checks = {
+            "all_seeds_fps_present": False,
+            "all_seeds_fps_speedup_ge_min": False,
+        }
+    checks = {**quality_checks, **fps_checks}
+    quality_passed = all(quality_checks.values())
+    fps_passed = all(fps_checks.values()) if unlimited_fps else False
     return {
-        "passed": all(checks.values()),
+        "passed": quality_passed and fps_passed,
+        "quality_passed": quality_passed,
+        "fps_passed": fps_passed,
         "checks": checks,
+        "quality_checks": quality_checks,
+        "fps_checks": fps_checks,
         "lpips_improve_ratio_mean": statistics.mean(lpips_ratios),
         "psnr_drop_mean": statistics.mean(psnr_drops),
         "ssim_drop_mean": statistics.mean(ssim_drops),
+        "fps_speedup_mean": statistics.mean(fps_speedups) if fps_speedups else None,
     }
 
 
@@ -440,7 +473,7 @@ def main():
         if case.get("profile") != args.baseline_profile and delta is not None:
             prescreen = evaluate_prescreen(delta, args)
             case["prescreen"] = prescreen
-        gate = evaluate_final(case, baseline_case or {}, delta, e3_ref, args)
+        gate = evaluate_final(case, baseline_case or {}, delta, e3_ref, args, unlimited_fps=baseline_fps)
         case.update({k: gate[k] for k in ("pass", "quality_pass", "fps_status", "fps_speedup_vs_unlimited", "fail_reasons") if k in gate})
         if gate.get("fps_soft_warn"):
             case.setdefault("fail_reasons", []).append("fps_soft_warn")
@@ -450,7 +483,7 @@ def main():
     for profile, profile_cases in by_profile.items():
         agg = aggregate_profile(profile_cases) or {"profile": profile}
         if profile != args.baseline_profile:
-            multiseed = evaluate_multiseed(profile_cases, baseline_by_seed, args)
+            multiseed = evaluate_multiseed(profile_cases, baseline_by_seed, args, unlimited_fps=baseline_fps)
             agg["multiseed_gate"] = multiseed
             deltas = [
                 case["delta_vs_rgb_ssim"]
@@ -475,12 +508,26 @@ def main():
             "gate_ssim_drop_worst": args.gate_ssim_drop_worst,
             "max_points": args.max_points,
             "min_fps_speedup_vs_unlimited": args.min_fps_speedup,
+            "unlimited_fps": baseline_fps,
             "prescreen_lpips_improve_ratio": args.prescreen_lpips_improve,
             "prescreen_psnr_drop_db": args.prescreen_psnr_drop,
             "prescreen_ssim_drop": args.prescreen_ssim_drop,
             "e3_reference": e3_ref,
-            "note": "E4 gates are relative to rgb_ssim baseline per seed, not unlimited.",
+            "note": (
+                "Quality gates are relative to rgb_ssim baseline per seed. "
+                "Per-case and multiseed FPS gates are relative to unlimited_fps."
+            ),
         },
+        "quality_passing_profiles": [
+            profile
+            for profile, agg in profile_aggs.items()
+            if profile != args.baseline_profile and agg.get("multiseed_gate", {}).get("quality_passed")
+        ],
+        "fps_passing_profiles": [
+            profile
+            for profile, agg in profile_aggs.items()
+            if profile != args.baseline_profile and agg.get("multiseed_gate", {}).get("fps_passed")
+        ],
         "quality_passing_cases": [c["case"] for c in enriched if c.get("quality_pass")],
         "passing_cases": [c["case"] for c in enriched if c.get("pass")],
         "recommended_top_single_scale": recommend_top_profiles(profile_aggs, multiscale=False),

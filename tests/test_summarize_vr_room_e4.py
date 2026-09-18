@@ -15,6 +15,7 @@ assert _SPEC.loader is not None
 _SPEC.loader.exec_module(_MOD)
 
 compare_to_baseline = _MOD.compare_to_baseline
+evaluate_final = _MOD.evaluate_final
 evaluate_multiseed = _MOD.evaluate_multiseed
 evaluate_prescreen = _MOD.evaluate_prescreen
 
@@ -29,6 +30,7 @@ class Args:
     gate_ssim_drop = 0.002
     gate_ssim_drop_worst = 0.003
     max_points = 2_000_000
+    min_fps_speedup = 1.5
 
 
 class SummarizeE4GateTests(unittest.TestCase):
@@ -51,7 +53,9 @@ class SummarizeE4GateTests(unittest.TestCase):
             {"seed": 2, "psnr": 27.43, "ssim": 0.8786, "lpips": 0.209, "num_points": 1_905_000},
         ]
         result = evaluate_multiseed(profile_cases, baseline_by_seed, Args())
-        self.assertTrue(result["passed"])
+        self.assertTrue(result["quality_passed"])
+        self.assertFalse(result["fps_passed"])
+        self.assertFalse(result["passed"])
 
     def test_multiseed_gate_fails_when_one_seed_regresses_lpips(self):
         baseline_by_seed = {
@@ -67,6 +71,37 @@ class SummarizeE4GateTests(unittest.TestCase):
         result = evaluate_multiseed(profile_cases, baseline_by_seed, Args())
         self.assertFalse(result["passed"])
         self.assertFalse(result["checks"]["all_seeds_lpips_not_worse"])
+
+    def test_evaluate_final_uses_unlimited_fps_argument(self):
+        baseline = {"psnr": 27.5, "ssim": 0.879, "lpips": 0.222, "fps": 160.0}
+        case = {
+            "psnr": 27.45,
+            "ssim": 0.8788,
+            "lpips": 0.208,
+            "num_points": 1_900_000,
+            "fps": 120.0,
+        }
+        delta = compare_to_baseline(case, baseline)
+        result = evaluate_final(case, baseline, delta, {}, Args(), unlimited_fps=80.0)
+        self.assertTrue(result["quality_pass"])
+        self.assertTrue(result["pass"])
+        self.assertAlmostEqual(result["fps_speedup_vs_unlimited"], 1.5)
+
+    def test_multiseed_quality_and_fps_gates_are_separate(self):
+        baseline_by_seed = {
+            0: {"psnr": 27.5, "ssim": 0.879, "lpips": 0.222},
+            1: {"psnr": 27.5, "ssim": 0.879, "lpips": 0.222},
+            2: {"psnr": 27.5, "ssim": 0.879, "lpips": 0.222},
+        }
+        profile_cases = [
+            {"seed": 0, "psnr": 27.45, "ssim": 0.8788, "lpips": 0.208, "num_points": 1_900_000, "fps": 120.0},
+            {"seed": 1, "psnr": 27.44, "ssim": 0.8787, "lpips": 0.207, "num_points": 1_910_000, "fps": 120.0},
+            {"seed": 2, "psnr": 27.43, "ssim": 0.8786, "lpips": 0.209, "num_points": 1_905_000, "fps": 120.0},
+        ]
+        result = evaluate_multiseed(profile_cases, baseline_by_seed, Args(), unlimited_fps=80.0)
+        self.assertTrue(result["quality_passed"])
+        self.assertTrue(result["fps_passed"])
+        self.assertTrue(result["passed"])
 
 
 if __name__ == "__main__":
