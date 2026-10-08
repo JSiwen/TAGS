@@ -112,9 +112,19 @@ cd D:\TAGSs\TAGSs_core
 
 ### 3. 回到 gaussian_splatting：同一套 metrics.py
 
+幂等的一键脚本（推荐）：
+
 ```powershell
 conda activate gaussian_splatting
 cd D:\TAGSs\TAGSs_core
+.\scripts\run_bicycle_vs_dn_final.ps1
+```
+
+脚本会：(1) sanity 检查三个 seed 的 final ply；(2) 已 scored 的 seed 跳过 render+metrics，否则跑一次；(3) `summarize_bicycle_e4_vs_dn.py` 出单 seed summary；(4) `aggregate_bicycle_3seed.py` 出 3-seed summary；(5) 打 headlines。Dry-run：`$env:DRY_RUN = "1`。
+
+只跑汇总（不重训、不重渲、不重分）：
+
+```powershell
 python scripts\summarize_bicycle_e4_vs_dn.py
 ```
 
@@ -122,9 +132,38 @@ DN 渲染要落在 `output/bicycle_dn_renders/eval/{pred,gt}/rgb/`。汇总脚�
 
 ## 输出
 
-- `output/bicycle_e4_lpips_ms_w005/`
+- `output/bicycle_e4_lpips_ms_w005[_seedN]/`
 - `output/bicycle_dn_train/bicycle_e4_vs_dn/seed0/`
 - `output/bicycle_dn_renders/eval/{pred,gt}/rgb/`
 - `output/bicycle_dn_splatter/test/dn-splatter/{renders,gt}/`（给 `metrics.py`）
-- `output/bicycle_e4_vs_dn_summary.json`
+- `output/bicycle_e4_vs_dn_summary.json`（单 seed，TAGS seed0 vs DN）
 - `output/bicycle_e4_vs_dn_summary.csv`
+- `output/bicycle_e4_vs_dn_summary_3seed.json`（**3-seed mean ± std vs DN，主表来源**）
+- `output/bicycle_e4_vs_dn_summary_3seed.csv`
+- `output/bicycle_e4_vs_dn_summary_3seed_per_view.csv`（25 视角 by-sorted-index 配对）
+
+## 结果
+
+锁定协议、images_4 原生训练 30k 步、单目深度对齐到 1237×822、相同 hold-8 划分下的硬数据（3-seed mean ± std）：
+
+| Case | PSNR↑ | SSIM↑ | LPIPS↓ | Points | 备注 |
+|---|---:|---:|---:|---:|---|
+| **TAGS `lpips_ms_w005` (3-seed)** | **25.055 ± 0.022** | **0.7493 ± 0.0005** | **0.2025 ± 0.0008** | 2.282M | seed0/1/2 协议一致；std 极低，说明配方对该数据集稳定 |
+| DN-Splatter (PearsonDepth, λ=0.2) | 22.898 | 0.6795 | 0.3154 | 1.797M | 单次跑，DN 论文未给 Mip-NeRF 360 室外数字 |
+| **Δ (TAGS − DN)** | **+2.16 dB** | **+0.070** | **−0.113** | 1.27× | LPIPS 绝对值变小 = TAGS 更好 |
+
+Per-view 胜率（按 sorted-index 配对；TAGS 视角编号 `00000..00024`，DN 视角编号 `_DSC8679..8872`，**无 stem 交集，按 PSNR 升序配对**）：
+
+| 规则 | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 单 seed (TAGS seed0) 胜 DN | **25 / 25** | **25 / 25** | **25 / 25** |
+| 3-seed：所有 seed 都比 DN 好才计胜（**论文用此**） | **25 / 25** | **23 / 25** | **23 / 25** |
+
+**口径说明**：
+
+- **数据集**：Mip-NeRF 360 bicycle，195 张（25 测试 + 170 训练），`images_4` 实测 1237×822。
+- **深度来源**：TAGS 与 DN 共用 `mono_depth/*_aligned.npy`（由 `depth_any_out` + `sparse/0/depth_params.json` 导出，量纲统一到米），不跑 Zoe/UniDepth 两次。
+- **法线来源**：TAGS 用深度梯度（geo prior），DN 用 `normals_from_pretrain/`（外部网络，加载时缩放）。**这是 TAGS-DN 唯一未对齐点**；论文讨论里要点出。
+- **位姿**：DN 经 nerfstudio `transforms.json`（`orientation_method=none`、`auto_scale_poses=false`），非 COLMAP 逐字节拷贝。
+- **视角配对 by sorted-index 而非 by stem 的原因**：TAGS 走 `images_4/00000.png` 编号；DN 的 `ns-export` 渲染管线保留原始 COLMAP 文件名 `_DSC####.png`。两者 stem 集合完全不相交；本表用 PSNR 升序强制配对（25 vs 25），并在 CSV 的 `view_alignment` 字段中标注 `by_sorted_index`。
+- **Reproduce**：`.\scripts\run_bicycle_vs_dn_final.ps1`（幂等，已 scored 的 seed 跳过 render+metrics；只重算 summary）。
