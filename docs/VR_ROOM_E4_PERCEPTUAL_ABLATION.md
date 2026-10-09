@@ -135,7 +135,7 @@ E4 **不修改** geo prior 时间表（20k 结束），LPIPS 21k 才启用。因
 - 训练期 `geo/depth_*` 轨迹是否异常
 - 训练后与单目 inverse-depth 的一致性是否下降
 
-若深度指标仍不足，应另开 **E4b** 调整 geo 时间表，不能在本轮同时改动。
+若深度指标仍不足，应另开 **E4b** 调整 geo 时间表，不能在本轮同时改动。E4b 协议见 `docs/VR_ROOM_E4B_GEO_OVERLAP.md`。
 
 ## 判读流程
 
