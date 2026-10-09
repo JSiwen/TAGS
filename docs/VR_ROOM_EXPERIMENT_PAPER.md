@@ -207,11 +207,23 @@ E4b 冻结多尺度 0.05 和 21k 阶跃，只改几何衰减。`decay20k` 直接
 
 E4b 唯一完整通过预设多 seed 联合门控的配置是深度 25.5k、法线 24k：它把 27k 共同衰减的 SSIM 风险收回，且深度 log-L1 改善更大。结论：若应用更看重与传感器深度的一致性，深度 25.5k、法线 24k 是 E4b 协议下应采用的配置。27k 共同衰减仍可作为“最大深度改善”的备选，但其 SSIM 偏离 0.0002 门控需要在论文里点出。
 
+需要说明的是 FPS 测量的当前状态：`depth25500_normal24k` 的种子 1、2 与 `decay24k` 的种子 2 这三个 E4b 案例在生成 summary 时没有 `fps_benchmark.json`，被汇总脚本标记为 `fps_status=pending`。补做 FPS 测量的命令是：
+
+```powershell
+conda activate gaussian_splatting
+.\scripts\run_e4b_post.ps1 -Stage summarize -Cases `
+    "vr_room_e4b_depth25500_normal24k_seed1",`
+    "vr_room_e4b_depth25500_normal24k_seed2",`
+    "vr_room_e4b_decay24k_seed2"
+```
+
+已知在 seed 0 单独测得的 `depth25500_normal24k` 上，相对无限制模型 82.6 FPS 的 speedup 为 2.04×，已远高于 E4b 通过门控 1.5×。其余两个 seed 的 FPS 数值在重测后应给出与 seed 0 同量级（点数都接近 190 万、致密化日程相同），所以本节的 FPS 报告暂时以 seed 0 数值代表并标注 pending。
+
 ### 5.5 室外迁移的当前状态
 
 同一多尺度 0.05 配方已在 Mip-NeRF 360 的 `bicycle` 场景 [8] 上完成 4 个随机种子的 30 000 次迭代，输出位于 `output/bicycle_e4_lpips_ms_w005[_seedN]/`。DN-Splatter 在同一集 COLMAP 、images_4 原生分辨率（1237×822）上重训同一次，输出位于 `output/bicycle_dn_splatter/`。双方共用仓库 `metrics.py`（VGG LPIPS）在统一的 hold-8 划分上评分。
 
-4 种子平均：TAGS PSNR 25.061 ± 0.021 dB、SSIM 0.7490 ± 0.0006、LPIPS 0.2029 ± 0.0009，点数约 228 万；DN-Splatter 单次跑 PSNR 22.898 dB、SSIM 0.6795、LPIPS 0.3154，点数约 180 万。差值为 TAGS 减 DN：ΔPSNR +2.16 dB、ΔSSIM +0.070、ΔLPIPS −0.113（绝对值变小有利于 TAGS）。按 sorted-index 配对 25 个测试视角，TAGS 25/25 上 PSNR 胜击 DN，SSIM 与 LPIPS 各 23/25 胜击。以上数字来自 `output/bicycle_e4_vs_dn_summary_4seed.json`。该表是室外 vs DN 的主表；室内的 26.4 / 0.86 / 0.134 不填到该表中，两者位姿、光架器、LPIPS 骨干不同，不能直接相减。
+4 种子平均：TAGS PSNR 25.061 ± 0.021 dB、SSIM 0.7490 ± 0.0006、LPIPS 0.2029 ± 0.0009，点数约 228 万；DN-Splatter 单次跑 PSNR 22.898 dB、SSIM 0.6795、LPIPS 0.3154，点数约 180 万。差值为 TAGS 减 DN：ΔPSNR +2.16 dB、ΔSSIM +0.070、ΔLPIPS −0.113（绝对值变小有利于 TAGS）。按 sorted-index 配对 25 个测试视角，TAGS 25/25 上 PSNR 胜出 DN，SSIM 与 LPIPS 各 23/25 胜出。以上数字来自 `output/bicycle_e4_vs_dn_summary_4seed.json`。该表是室外 vs DN 的主表；室内的 26.4 / 0.86 / 0.134 不填到该表中，两者位姿、光架器、LPIPS 骨干不同，不能直接相减。
 
 ## 6 讨论
 
@@ -231,7 +243,7 @@ E4b 唯一完整通过预设多 seed 联合门控的配置是深度 25.5k、法�
 
 在该结构上，21 000 迭代阶跃启用的多尺度 LPIPS（权重 0.05，尺度权重 0.5/0.3/0.2）把三种子平均 LPIPS 从 0.22296 降到 0.19137，降幅 14.17%，PSNR 从 27.428 dB 升到 27.473 dB，SSIM 从 0.87857 降到 0.87780，126 个配对视角的 LPIPS 全部改善。在 E4b 中，把深度单独留到 25.5k 迭代、法线维持 24k，可在不动感知收益的前提下，把深度 log-L1 从 0.05564 再降到 0.04775（改善 13.88%），平均 SSIM 反而升 0.00017，三种子均完整过设定联合门控；27 000 迭代的共同衰减是已测配置里深度改善与该配置接近、但平均 SSIM 降 0.00032 超出 0.0002 门控的一点。
 
-因此，当前推荐的新视角配方是 E4 的多尺度 0.05、几何先验于 20 000 迭代结束（默认选择）；若应用更看重与传感器深度的一致性，应采用 E4b 的“深度 25.5k、法线 24k”配置，它是三种子联合门控下唯一个平均 SSIM 不降反升、深度改善最大的点。室外 `bicycle` 上的同配方 vs DN-Splatter 已完成 4 种子 vs 单次的汇总：TAGS 优于 DN 约 2.16 dB PSNR、0.07 SSIM、0.113 LPIPS，25/25 上 PSNR 胜击。
+因此，当前推荐的新视角配方是 E4 的多尺度 0.05、几何先验于 20 000 迭代结束（默认选择）；若应用更看重与传感器深度的一致性，应采用 E4b 的“深度 25.5k、法线 24k”配置，它是三种子联合门控下唯一个平均 SSIM 不降反升、深度改善最大的点。该推荐的渲染吞吐已在 seed 0 上确认 ≥ 1.5× 无限制模型（2.04×）；其余两个 seed 的 FPS 测得后预期落在同量级。室外 `bicycle` 上的同配方 vs DN-Splatter 已完成 4 种子 vs 单次的汇总：TAGS 优于 DN 约 2.16 dB PSNR、0.07 SSIM、0.113 LPIPS，25/25 上 PSNR 胜出。
 
 ## 参考文献
 
