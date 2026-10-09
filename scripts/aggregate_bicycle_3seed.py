@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Aggregate 3-seed TAGS metrics for the bicycle E4 winner and the DN baseline.
+"""Aggregate TAGS metrics for the bicycle E4 winner and the DN baseline.
 
-Reads:
-    output/bicycle_e4_lpips_ms_w005/results.json + per_view.json
-    output/bicycle_e4_lpips_ms_w005_seed1/results.json + per_view.json
-    output/bicycle_e4_lpips_ms_w005_seed2/results.json + per_view.json
+Auto-discovers any ``output/<tags-glob>/`` directory that has a trained
+``point_cloud/iteration_30000/point_cloud.ply`` and aggregates over all
+of them (1, 2, 3, ... seeds — whatever is currently trained). When more
+seeds show up later, just train them; the script will pick them up.
+
+Reads (per seed):
+    output/bicycle_e4_lpips_ms_w005[_seedN]/results.json + per_view.json
     output/bicycle_dn_splatter/results.json + per_view.json + splat.ply
 
 Writes:
@@ -12,7 +15,7 @@ Writes:
     output/bicycle_e4_vs_dn_summary_3seed.csv
     output/bicycle_e4_vs_dn_summary_3seed_per_view.csv
 
-Mean / std are reported over the three seeds.
+Mean / std are reported over the discovered seeds.
 Per-view win counts require every TAGS seed to be strictly better than DN
 on the same view (intersection of view stems across all seeds and DN).
 """
@@ -21,19 +24,17 @@ import argparse
 import csv
 import json
 import os
+import re
 import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-TAGS_SEED_DIRS = {
-    "seed0": "bicycle_e4_lpips_ms_w005",
-    "seed1": "bicycle_e4_lpips_ms_w005_seed1",
-    "seed2": "bicycle_e4_lpips_ms_w005_seed2",
-}
 DN_DIR = "bicycle_dn_splatter"
 METHOD_KEY = "ours_30000"
 DN_KEY = "dn-splatter"
+TAGS_BASENAME = "bicycle_e4_lpips_ms_w005"
+SEED_SUFFIX_RE = re.compile(r"^(?P<base>.*?)(?:_seed(?P<n>\d+))?$")
 
 
 def _candidates_for(model_dir: Path, name: str, key: str):
@@ -80,6 +81,46 @@ def read_per_view(model_dir: Path, key: str, ply_path: Path = None):
     if isinstance(block, dict):
         return block
     return {}
+
+
+def discover_seed_dirs(output_dir: Path, base: str = TAGS_BASENAME) -> dict:
+    """Scan ``output_dir`` for trained TAGS seeds.
+
+    Returns an ordered ``{label: dirname}`` dict, label is ``seed0`` for
+    the base directory and ``seedN`` for ``{base}_seedN`` siblings.
+    Sorts ``seed0`` first, then ``seed1``, ``seed2``, ... in numeric order.
+    A directory is considered "trained" if it has
+    ``point_cloud/iteration_30000/point_cloud.ply``.
+    """
+    if not output_dir.is_dir():
+        return {}
+    found = {}
+
+    def _key_sort(label: str):
+        if label == "seed0":
+            return (0, 0)
+        m = re.match(r"^seed(\d+)$", label)
+        if m:
+            return (1, int(m.group(1)))
+        return (2, label)
+
+    for entry in sorted(output_dir.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        if entry.name == base:
+            label = "seed0"
+        elif entry.name.startswith(base + "_seed"):
+            tail = entry.name[len(base) + len("_seed"):]
+            if tail.isdigit():
+                label = f"seed{tail}"
+            else:
+                continue
+        else:
+            continue
+        ply = entry / "point_cloud" / "iteration_30000" / "point_cloud.ply"
+        if ply.is_file():
+            found[label] = entry.name
+    return dict(sorted(found.items(), key=lambda kv: _key_sort(kv[0])))
 
 
 def count_ply_vertices(path: Path):
@@ -227,7 +268,13 @@ def main():
     tags_results = {}
     tags_per_view = {}
     missing = []
-    for label, sub in TAGS_SEED_DIRS.items():
+    discovered = discover_seed_dirs(root / "output", base=TAGS_BASENAME)
+    if not discovered:
+        raise SystemExit(
+            f"No trained TAGS seeds found under {root / 'output'} matching "
+            f"base {TAGS_BASENAME} (need point_cloud/iteration_30000/point_cloud.ply)"
+        )
+    for label, sub in discovered.items():
         mdir = root / "output" / sub
         ply = mdir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
         block = read_results(mdir, METHOD_KEY, ply_path=ply)
@@ -238,8 +285,9 @@ def main():
         tags_per_view[label] = read_per_view(mdir, METHOD_KEY, ply_path=ply)
     if missing:
         raise SystemExit(f"Missing TAGS results for: {', '.join(missing)}")
-    if set(tags_results.keys()) != set(TAGS_SEED_DIRS.keys()):
-        raise SystemExit(f"Only {len(tags_results)} of 3 TAGS seeds scored: {list(tags_results.keys())}")
+    n_seeds = len(tags_results)
+    if n_seeds < 1:
+        raise SystemExit(f"No TAGS seeds scored: {list(tags_results.keys())}")
 
     dn_model_dir = root / "output" / DN_DIR
     dn_ply = dn_model_dir / "splat.ply"
@@ -266,7 +314,7 @@ def main():
             "metrics": "metrics.py VGG LPIPS",
             "note": (
                 "Delta is TAGS minus DN. Positive PSNR/SSIM favors TAGS; "
-                "positive LPIPS favors DN. TAGS numbers are mean +- std over 3 seeds."
+                f"positive LPIPS favors DN. TAGS numbers are mean +- std over {n_seeds} seeds."
             ),
         },
         "tags_seeds": {
@@ -277,7 +325,7 @@ def main():
             }
             for label in tags_results
         },
-        "tags_3seed": {
+        f"tags_{n_seeds}seed": {
             "psnr_mean": psnr_mean,
             "psnr_std": psnr_std,
             "ssim_mean": ssim_mean,
@@ -309,7 +357,7 @@ def main():
         writer = csv.writer(handle)
         writer.writerow(["case", "PSNR_mean", "PSNR_std", "SSIM_mean", "SSIM_std", "LPIPS_mean", "LPIPS_std"])
         writer.writerow([
-            "TAGS_3seed",
+            f"TAGS_{n_seeds}seed",
             f"{psnr_mean:.4f}", f"{psnr_std:.4f}",
             f"{ssim_mean:.5f}", f"{ssim_std:.5f}",
             f"{lpips_mean:.5f}", f"{lpips_std:.5f}",
@@ -322,7 +370,7 @@ def main():
         ])
         d = summary["delta_tags_minus_dn"]
         writer.writerow([
-            "Delta (TAGS 3seed - DN)",
+            f"Delta (TAGS {n_seeds}seed - DN)",
             f"{d['psnr']:+.4f}", "",
             f"{d['ssim']:+.5f}", "",
             f"{d['lpips']:+.5f}", "",
