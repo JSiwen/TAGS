@@ -255,15 +255,24 @@ def ms(xs):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=str(ROOT))
-    parser.add_argument("--json-out", default=str(ROOT / "output" / "bicycle_e4_vs_dn_summary_3seed.json"))
-    parser.add_argument("--csv-out", default=str(ROOT / "output" / "bicycle_e4_vs_dn_summary_3seed.csv"))
-    parser.add_argument("--csv-per-view", default=str(ROOT / "output" / "bicycle_e4_vs_dn_summary_3seed_per_view.csv"))
+    parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Defaults to output/bicycle_e4_vs_dn_summary_{N}seed.json where N is the discovered seed count.",
+    )
+    parser.add_argument(
+        "--csv-out",
+        default=None,
+        help="Defaults to output/bicycle_e4_vs_dn_summary_{N}seed.csv where N is the discovered seed count.",
+    )
+    parser.add_argument(
+        "--csv-per-view",
+        default=None,
+        help="Defaults to output/bicycle_e4_vs_dn_summary_{N}seed_per_view.csv where N is the discovered seed count.",
+    )
     args = parser.parse_args()
 
     root = Path(args.root)
-    json_out = Path(args.json_out)
-    csv_out = Path(args.csv_out)
-    csv_per_view = Path(args.csv_per_view)
 
     tags_results = {}
     tags_per_view = {}
@@ -288,6 +297,10 @@ def main():
     n_seeds = len(tags_results)
     if n_seeds < 1:
         raise SystemExit(f"No TAGS seeds scored: {list(tags_results.keys())}")
+
+    json_out = Path(args.json_out) if args.json_out else root / "output" / f"bicycle_e4_vs_dn_summary_{n_seeds}seed.json"
+    csv_out = Path(args.csv_out) if args.csv_out else root / "output" / f"bicycle_e4_vs_dn_summary_{n_seeds}seed.csv"
+    csv_per_view = Path(args.csv_per_view) if args.csv_per_view else root / "output" / f"bicycle_e4_vs_dn_summary_{n_seeds}seed_per_view.csv"
 
     dn_model_dir = root / "output" / DN_DIR
     dn_ply = dn_model_dir / "splat.ply"
