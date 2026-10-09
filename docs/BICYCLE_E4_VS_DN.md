@@ -120,7 +120,7 @@ cd D:\TAGSs\TAGSs_core
 .\scripts\run_bicycle_vs_dn_final.ps1
 ```
 
-脚本会：(1) sanity 检查三个 seed 的 final ply；(2) 已 scored 的 seed 跳过 render+metrics，否则跑一次；(3) `summarize_bicycle_e4_vs_dn.py` 出单 seed summary；(4) `aggregate_bicycle_3seed.py` 出 3-seed summary；(5) 打 headlines。Dry-run：`$env:DRY_RUN = "1`。
+脚本会：(1) sanity 检查所有已 train 的 seed 的 final ply；(2) 已 scored 的 seed 跳过 render+metrics，否则跑一次；(3) `summarize_bicycle_e4_vs_dn.py` 出单 seed summary；(4) `aggregate_bicycle_3seed.py` 出 N-seed summary（N = 实际扫到的 seed 数；输出文件名 \*_{N}seed.*\ 跟随 N 变化）；(5) 打 headlines。Dry-run：`$env:DRY_RUN = "1`。
 
 只跑汇总（不重训、不重渲、不重分）：
 
@@ -138,17 +138,17 @@ DN 渲染要落在 `output/bicycle_dn_renders/eval/{pred,gt}/rgb/`。汇总脚�
 - `output/bicycle_dn_splatter/test/dn-splatter/{renders,gt}/`（给 `metrics.py`）
 - `output/bicycle_e4_vs_dn_summary.json`（单 seed，TAGS seed0 vs DN）
 - `output/bicycle_e4_vs_dn_summary.csv`
-- `output/bicycle_e4_vs_dn_summary_3seed.json`（**3-seed mean ± std vs DN，主表来源**）
-- `output/bicycle_e4_vs_dn_summary_3seed.csv`
-- `output/bicycle_e4_vs_dn_summary_3seed_per_view.csv`（25 视角 by-sorted-index 配对）
+- `output/bicycle_e4_vs_dn_summary_{N}seed.json`（**N-seed mean ± std vs DN，主表来源；N = 实际扫到的 seed 数**）
+- `output/bicycle_e4_vs_dn_summary_{N}seed.csv`
+- `output/bicycle_e4_vs_dn_summary_{N}seed_per_view.csv`（25 视角 by-sorted-index 配对）
 
 ## 结果
 
-锁定协议、images_4 原生训练 30k 步、单目深度对齐到 1237×822、相同 hold-8 划分下的硬数据（3-seed mean ± std）：
+锁定协议、images_4 原生训练 30k 步、单目深度对齐到 1237×822、相同 hold-8 划分下的硬数据（**4-seed mean ± std**，seed0/1/2/3）：
 
 | Case | PSNR↑ | SSIM↑ | LPIPS↓ | Points | 备注 |
 |---|---:|---:|---:|---:|---|
-| **TAGS `lpips_ms_w005` (3-seed)** | **25.055 ± 0.022** | **0.7493 ± 0.0005** | **0.2025 ± 0.0008** | 2.282M | seed0/1/2 协议一致；std 极低，说明配方对该数据集稳定 |
+| **TAGS `lpips_ms_w005` (4-seed)** | **25.061 ± 0.021** | **0.7490 ± 0.0006** | **0.2029 ± 0.0009** | 2.282M | seed0/1/2/3 协议一致；std 极低，说明配方对该数据集稳定 |
 | DN-Splatter (PearsonDepth, λ=0.2) | 22.898 | 0.6795 | 0.3154 | 1.797M | 单次跑，DN 论文未给 Mip-NeRF 360 室外数字 |
 | **Δ (TAGS − DN)** | **+2.16 dB** | **+0.070** | **−0.113** | 1.27× | LPIPS 绝对值变小 = TAGS 更好 |
 
@@ -157,7 +157,17 @@ Per-view 胜率（按 sorted-index 配对；TAGS 视角编号 `00000..00024`，D
 | 规则 | PSNR | SSIM | LPIPS |
 |---|---:|---:|---:|
 | 单 seed (TAGS seed0) 胜 DN | **25 / 25** | **25 / 25** | **25 / 25** |
-| 3-seed：所有 seed 都比 DN 好才计胜（**论文用此**） | **25 / 25** | **23 / 25** | **23 / 25** |
+| 4-seed：所有 seed 都比 DN 好才计胜（**论文用此**） | **25 / 25** | **23 / 25** | **23 / 25** |
+
+**Seed-level 数据**（4-seed raw）：
+
+| seed | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 0 | 25.030 | 0.7487 | 0.2032 |
+| 1 | 25.067 | 0.7496 | 0.2026 |
+| 2 | 25.067 | 0.7494 | 0.2017 |
+| 3 | 25.077 | 0.7484 | 0.2039 |
+| **mean ± std** | **25.061 ± 0.021** | **0.7490 ± 0.0006** | **0.2029 ± 0.0009** |
 
 **口径说明**：
 
