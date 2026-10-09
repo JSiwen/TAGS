@@ -1,6 +1,6 @@
 # TAGSs 全实验汇总：整体效果最好的版本
 
-> **生成时间**：2026-10-08
+> **生成时间**：2026-10-09
 > **数据来源**：`output/*.csv`、`output/*.json`、`docs/VR_ROOM_*.md`、`docs/BICYCLE_*.md`、`output/bicycle_v14_*.md`、`output/bicycle_v15_experiment_architecture.md`、`docs/THESIS_SYSTEM_DESIGN.md`
 > **协议窗口**：30 000 迭代，固定 holdout 视角评估，仓库自有 `metrics.py` 同口径
 
@@ -10,13 +10,13 @@
 
 ## 一、TL;DR：两条最佳配置
 
-| 场景 | 最佳配置 (TAGS) | 路径 | 指标均值 (3 seed) / 一次跑 |
+| 场景 | 最佳配置 (TAGS) | 路径 | 指标均值 (3-4 seed) / 一次跑 |
 |---|---|---|---|
 | **室内 `vr_room`** | `lpips_ms_w005`（多尺度 LPIPS @ 21k step，权重 0.05） + 250 万 cap 剪枝日程 + L1+SSIM 基线 + depth/normal 先验在 20k 衰减 | `output/vr_room_e4_lpips_ms_w005[_seedN]/` | **PSNR 27.473 dB · SSIM 0.87780 · LPIPS 0.19137 · 1.909M 高斯 · 165 FPS (vs unlimited 81.3, 2.03×)** |
 | **室外 `bicycle`** | 同 `lpips_ms_w005` 配方原样迁移到 bicycle（一次性首跑） | `output/bicycle_e4_lpips_ms_w005/` | **PSNR 25.030 dB · SSIM 0.7487 · LPIPS 0.2032 · 2.282M 高斯** |
 | **自行车 v14 体系内最佳** | `bicycle_v14_v8_monitor_28500_select`（单独 v8 骨架 + 28500 checkpoint，**唯一 gate-pass**） | A100 上 `output/bicycle_v14_v8_monitor_28500_select/` | **PSNR 25.518 dB · SSIM 0.7745 · LPIPS 0.1864**（gate：pass） |
 
-> **论文主推**：室内推荐 `lpips_ms_w005`（E4 胜出配方），论文 vs DN-Splatter 主表用 `vr_room_e4_lpips_ms_w005` 的室内 3-seed 均值；自行车同配方迁移得分（25.055 ± 0.022 / 0.7493 ± 0.0005 / 0.2025 ± 0.0008，**3-seed mean ± std**）同表对比 DN-Splatter (22.898 / 0.679 / 0.315)，**ΔPSNR +2.16 ± 0.02 dB · ΔSSIM +0.070 · ΔLPIPS −0.113（绝对值更有利于 TAGS）**。Per-view 胜率（按 sorted-index 配对；TAGS 视角名 `00000..24`，DN 视角名 `_DSC8679..8872`）：**PSNR 25/25、SSIM 23/25、LPIPS 23/25**。Reproduce: `.\scripts\run_bicycle_vs_dn_final.ps1`。
+> **论文主推**：室内推荐 `lpips_ms_w005`（E4 胜出配方），论文 vs DN-Splatter 主表用 `vr_room_e4_lpips_ms_w005` 的室内 3-seed 均值；自行车同配方迁移得分（25.061 ± 0.021 / 0.7490 ± 0.0006 / 0.2029 ± 0.0009，**4-seed mean ± std**）同表对比 DN-Splatter (22.898 / 0.679 / 0.315)，**ΔPSNR +2.163 ± 0.021 dB · ΔSSIM +0.070 · ΔLPIPS −0.113（绝对值更有利于 TAGS）**。Per-view 胜率（按 sorted-index 配对；TAGS 视角名 `00000..24`，DN 视角名 `_DSC8679..8872`）：**PSNR 25/25、SSIM 23/25、LPIPS 23/25**。Reproduce: `.\scripts\run_bicycle_vs_dn_final.ps1`。
 
 ---
 
@@ -43,7 +43,7 @@
 
 | 系列 | Case | Points | PSNR↑ | SSIM↑ | LPIPS↓ | 备注 |
 |---|---|---:|---:|---:|---:|---|
-| **vs DN 主表** | **TAGS `lpips_ms_w005`（室内胜出配方原样迁到 bicycle）** | **2,282,018** | **25.030** | **0.7487** | **0.2032** | **vs DN +2.13dB / +0.069 / −0.112** |
+| **vs DN 主表** | **TAGS `lpips_ms_w005`（室内胜出配方原样迁到 bicycle）** | **2,282,018** | **25.030** | **0.7487** | **0.2032** | **vs DN +2.16dB / +0.070 / −0.113**（4-seed mean vs DN） |
 | vs DN 主表 | DN-Splatter | 1,797,280 | 22.898 | 0.6795 | 0.3154 | 同样 images_4 (1237×822)，同 test holdout |
 | v4_restore baseline | `bicycle_integrated_v4_restore` | ~2.1M | 25.495 | 0.7740 | 0.1870 | perceptual-front / geo-late 集成 |
 | v8 gate ref | `bicycle_v8_color_geo_soft` | ~1.97 GB | 25.513 | 0.7746 | 0.1863 | gate-pass 阈值参考 |
@@ -117,7 +117,7 @@ v15 建议在 `bicycle_v14_v8_monitor_28500_select` 基础上做 dual-checkpoint
 5/5 候选完成训练；只有 `monitor_28500_select` 通过 gate。Score +0.0316。`monitor_28500` 较 `ours_30000` 同时 PSNR/SSIM 更高，与「final polish 牺牲 SSIM/PSNR」一致。结论：不启用 balanced late controller，只用 28500 checkpoint。
 
 ### 4.6 室外同配方迁移（vs DN）：`bicycle_e4_lpips_ms_w005`
-PSNR 25.030 / SSIM 0.7487 / LPIPS 0.2032 / 2.282M。相对 DN +2.13 dB PSNR、+0.069 SSIM、−0.112 LPIPS。
+PSNR 25.030 / SSIM 0.7487 / LPIPS 0.2032 / 2.282M（seed0）；4-seed mean PSNR 25.061 ± 0.021 / SSIM 0.7490 ± 0.0006 / LPIPS 0.2029 ± 0.0009。相对 DN +2.16 dB PSNR、+0.070 SSIM、−0.113 LPIPS。
 
 ---
 
