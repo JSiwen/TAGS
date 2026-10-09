@@ -15,3 +15,8 @@ def linear_warmup_decay(iteration, warmup_start, warmup_end, decay_start, decay_
     if iteration <= decay_start:
         return peak_value
     return linear_warmup(iteration, decay_start, decay_end, peak_value, final_value)
+
+
+def resolve_geo_decay_until(shared, override=0):
+    override = int(override or 0)
+    return override if override > 0 else int(shared or 0)

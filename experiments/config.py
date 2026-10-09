@@ -29,6 +29,9 @@ class ExperimentConfig:
     geo_prior_warmup_until: int
     geo_prior_decay_start: int
     geo_prior_decay_until: int
+    geo_prior_depth_decay_until: int
+    geo_prior_normal_decay_until: int
+    geo_prior_fullres_relax_max: float
     detail_loss_weight_init: float
     detail_loss_weight_final: float
     detail_loss_start_iter: int
@@ -163,6 +166,9 @@ class ExperimentConfig:
             geo_prior_warmup_until=args.geo_prior_warmup_until,
             geo_prior_decay_start=args.geo_prior_decay_start,
             geo_prior_decay_until=args.geo_prior_decay_until,
+            geo_prior_depth_decay_until=int(getattr(args, "geo_prior_depth_decay_until", 0) or 0),
+            geo_prior_normal_decay_until=int(getattr(args, "geo_prior_normal_decay_until", 0) or 0),
+            geo_prior_fullres_relax_max=float(getattr(args, "geo_prior_fullres_relax_max", 0.35)),
             detail_loss_weight_init=args.detail_loss_weight_init,
             detail_loss_weight_final=args.detail_loss_weight_final,
             detail_loss_start_iter=args.detail_loss_start_iter,

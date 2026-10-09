@@ -166,6 +166,11 @@ class ExperimentParams(ParamGroup):
         self.geo_prior_warmup_until = 5000
         self.geo_prior_decay_start = 12000
         self.geo_prior_decay_until = 24000
+        # 0 inherits geo_prior_decay_until. Used by E4b depth-only tail.
+        self.geo_prior_depth_decay_until = 0
+        self.geo_prior_normal_decay_until = 0
+        # Max fraction of geo weight removed by decay_start->decay_until full-res relax (0.35 -> ~0.65 at end).
+        self.geo_prior_fullres_relax_max = 0.35
 
         # Detail-preserving image loss settings
         self.detail_loss_weight_init = 0.0

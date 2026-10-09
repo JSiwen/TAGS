@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from .schedules import linear_warmup_decay
+from .schedules import linear_warmup_decay, resolve_geo_decay_until
 from utils.normal_utils import depth_to_normals
 
 
@@ -8,33 +8,45 @@ class GeometricPriorLoss:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def _scheduled_weight(self, iteration, init_value, peak_value, final_value):
+    def _decay_until_for(self, kind=None):
+        shared = int(getattr(self.cfg, "geo_prior_decay_until", 0))
+        if kind == "depth":
+            return resolve_geo_decay_until(shared, getattr(self.cfg, "geo_prior_depth_decay_until", 0))
+        if kind == "normal":
+            return resolve_geo_decay_until(shared, getattr(self.cfg, "geo_prior_normal_decay_until", 0))
+        return shared
+
+    def _scheduled_weight(self, iteration, init_value, peak_value, final_value, decay_until=None):
         start_iter = max(0, int(getattr(self.cfg, "geo_prior_start_iter", 0)))
         if iteration < start_iter:
             return 0.0
         shifted_iter = iteration - start_iter
         warmup_until = max(0, int(getattr(self.cfg, "geo_prior_warmup_until", 0)) - start_iter)
         decay_start = max(warmup_until, int(getattr(self.cfg, "geo_prior_decay_start", 0)) - start_iter)
-        decay_until = max(decay_start, int(getattr(self.cfg, "geo_prior_decay_until", 0)) - start_iter)
+        decay_until_abs = int(getattr(self.cfg, "geo_prior_decay_until", 0) if decay_until is None else decay_until)
+        decay_until_shifted = max(decay_start, decay_until_abs - start_iter)
         return linear_warmup_decay(
             shifted_iter,
             0,
             warmup_until,
             decay_start,
-            decay_until,
+            decay_until_shifted,
             init_value,
             peak_value,
             final_value,
         )
 
-    def _fullres_relax_factor(self, iteration):
-        decay_until = max(1, int(getattr(self.cfg, "geo_prior_decay_until", 24000)))
+    def _fullres_relax_factor(self, iteration, decay_until=None):
+        decay_until_abs = int(getattr(self.cfg, "geo_prior_decay_until", 24000) if decay_until is None else decay_until)
+        decay_until_abs = max(1, decay_until_abs)
         decay_start = max(0, int(getattr(self.cfg, "geo_prior_decay_start", 12000)))
         if iteration <= decay_start:
             return 1.0
-        progress = min(1.0, max(0.0, float(iteration - decay_start) / float(decay_until - decay_start + 1)))
+        progress = min(1.0, max(0.0, float(iteration - decay_start) / float(decay_until_abs - decay_start + 1)))
+        relax_max = float(getattr(self.cfg, "geo_prior_fullres_relax_max", 0.35))
+        relax_max = min(1.0, max(0.0, relax_max))
         # Preserve early geometry shaping while reducing over-smoothing in late refinement.
-        return 1.0 - 0.35 * progress
+        return 1.0 - relax_max * progress
 
     def _depth_loss(self, render_pkg, viewpoint_cam, iteration):
         if not hasattr(viewpoint_cam, "depth_reliable") or not viewpoint_cam.depth_reliable:
@@ -42,11 +54,13 @@ class GeometricPriorLoss:
         if getattr(viewpoint_cam, "invdepthmap", None) is None:
             return torch.tensor(0.0, device="cuda"), 0.0, 0.0
 
+        decay_until = self._decay_until_for("depth")
         weight = self._scheduled_weight(
             iteration,
             self.cfg.depth_prior_weight_init,
             self.cfg.depth_prior_weight_final,
             self.cfg.depth_prior_weight_min,
+            decay_until=decay_until,
         )
         if weight <= 0:
             return torch.tensor(0.0, device="cuda"), 0.0, 0.0
@@ -76,7 +90,7 @@ class GeometricPriorLoss:
             base_loss = base_loss + self.cfg.depth_prior_local_pearson_weight * self._local_pearson_depth_loss(pred, gt, mask)
 
         texture_relax = self._low_texture_relax_factor(viewpoint_cam.original_image.cuda())
-        weight = weight * self._fullres_relax_factor(iteration) * texture_relax
+        weight = weight * self._fullres_relax_factor(iteration, decay_until=decay_until) * texture_relax
         loss = base_loss * weight
         return loss, weight, mask_fraction
 
@@ -86,11 +100,13 @@ class GeometricPriorLoss:
         if getattr(viewpoint_cam, "invdepthmap", None) is None:
             return torch.tensor(0.0, device="cuda"), 0.0, 0.0
 
+        decay_until = self._decay_until_for("normal")
         weight = self._scheduled_weight(
             iteration,
             self.cfg.normal_prior_weight_init,
             self.cfg.normal_prior_weight_final,
             self.cfg.normal_prior_weight_min,
+            decay_until=decay_until,
         )
         if weight <= 0:
             return torch.tensor(0.0, device="cuda"), 0.0, 0.0
@@ -116,11 +132,11 @@ class GeometricPriorLoss:
 
         if self.cfg.normal_prior_tv_weight > 0:
             tv_mask = self._smooth_region_mask(gt_depth, viewpoint_cam.original_image.cuda(), base_mask)
-            tv_decay = max(0.2, self._fullres_relax_factor(iteration))
+            tv_decay = max(0.2, self._fullres_relax_factor(iteration, decay_until=decay_until))
             base_loss = base_loss + (self.cfg.normal_prior_tv_weight * tv_decay) * self._tv_loss(pred_n, tv_mask)
 
         texture_relax = self._low_texture_relax_factor(viewpoint_cam.original_image.cuda())
-        weight = weight * self._fullres_relax_factor(iteration) * texture_relax
+        weight = weight * self._fullres_relax_factor(iteration, decay_until=decay_until) * texture_relax
         loss = base_loss * weight
         return loss, weight, normal_mask_fraction
 
