@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 数据集
+data/
+datasets/
+
+# 训练输出
+output/
+outputs/
+checkpoints/
+logs/
+wandb/
+
+# 模型文件
+*.pth
+*.pt
+*.ckpt
+*.ply
+
+# 敏感信息
+.env
+*.pem
