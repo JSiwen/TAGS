@@ -39,3 +39,27 @@ Linux/AutoDL 使用相同 Python 驱动器，替换绝对路径；无需 PowerSh
 检查 camera_manifest.json、budget_report.json、training_curves.csv、experiment_manifest.json 和 runtime.json。预算同时要求 N_final<=N0 且差值<=0.5%；不足预算不会补点。质量目标使用未截断指标。逐视角指标仍由原 metrics.py 输出 per_view.json；本次未改指标实现、未自动生成方案的四种汇总CSV，也未完成跨run尺寸/视角断言、数据版本哈希和多seed汇总。不能把训练成功当作完整实验验收。
 
 验证：24项后期调度断言、4组驱动器模拟dry-run、Python compileall通过；尚未运行GPU短训、checkpoint恢复数值对照、完整训练或质量验收。模拟数据在 output/fixed_budget_driver_fixture，仅用于驱动器验证，不能用作基准。
+
+
+## AutoDL：unrecognized arguments 的修复
+
+如果报错不认识 psnr_final_multiplier / geo_scale / final_target_gaussians，说明只拿到了新版驱动器，训练模块仍旧。应更新整套代码。远端代码在 codex/fixed-budget-experiments-20261029 分支，main 尚未合并。
+
+为保留服务器旧工作区，可创建独立工作树（新目录必须不存在）：
+
+```bash
+cd /root/autodl-tmp/TAGS
+git fetch https://github.com/JSiwen/TAGS.git codex/fixed-budget-experiments-20261029
+git worktree add --detach /root/autodl-tmp/TAGS_fixed_budget_20261029 FETCH_HEAD
+cd /root/autodl-tmp/TAGS_fixed_budget_20261029/TAGSs_bicycle_v14
+export DATA=/root/autodl-tmp/TAGS/TAGSs_bicycle_v14/data/bicycle
+export DEPTH="$DATA/depth_any_out"
+# BASE 必须指向实际TAGS的完整30k基准，不是原始gaussian-splatting/output。
+export BASE=/替换为实际TAGS基准目录
+python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --depths "$DEPTH" --case R0 --output output/tags_budget_sweep/reference_seed0_v2
+# dry-run确认后，执行同一命令并加 --execute。
+```
+
+新版驱动器会在创建输出目录前检查八个配套模块的更新标记和基准训练配置；不完整就报错。--execute还会先加载训练CLI的--help，发现导入故障时不创建输出目录。此检查不等价于GPU短训。旧失败目录无需删除，新目录用reference_seed0_v2。不要删除新参数来绕过版本错误。
+
+特别注意：原始3DGS的cfg_args一般只有模型/渲染参数，无法恢复TAGS几何、SPA、感知损失及学习率设置。即使PLY可读并给出N0，也不构成TAGS配置冻结。原有只检查模型参数的模拟dry-run未覆盖此错误；现新增3项preflight回归检查，均通过。
