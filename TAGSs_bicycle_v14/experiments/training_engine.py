@@ -83,6 +83,12 @@ class TrainingEngine:
             train_test_exp=dataset.train_test_exp,
             cfg=cfg,
         )
+        if self.is_main_process:
+            manifest = {}
+            for split, cameras in (("train", scene.getTrainCameras(1.0)), ("test", scene.getTestCameras(1.0))):
+                manifest[split] = [{"id": c.image_name, "width": c.image_width, "height": c.image_height} for c in cameras]
+            with open(os.path.join(scene.model_path, "camera_manifest.json"), "w") as f:
+                json.dump(manifest, f, indent=2)
         self.curr_scale = 1.0
         self.viewpoint_stack = []
         self.viewpoint_indices = []
@@ -659,15 +665,74 @@ class TrainingEngine:
                     if self.is_main_process and iteration == self.opt.iterations and progress_bar is not None:
                         progress_bar.close()
 
+                if self.is_main_process and iteration % 500 == 0:
+                    import csv
+                    fields = ["iteration", "scene/total_points", "train/total_loss", "train/psnr_loss_raw",
+                              "train/psnr_loss_weighted", "train/psnr_weight_original", "train/psnr_multiplier",
+                              "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
+                    path = os.path.join(self.scene.model_path, "training_curves.csv")
+                    exists = os.path.exists(path)
+                    with open(path, "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                        if not exists: writer.writeheader()
+                        writer.writerow(dict(stats, iteration=iteration))
+
+                if self.is_main_process and iteration == self.opt.iterations:
+                    target = int(getattr(self.cfg, "final_target_gaussians", 0))
+                    if target > 0:
+                        report = {"N0": target, "N_final": point_count,
+                                  "budget_pass": point_count <= target,
+                                  "matched_budget_pass": point_count <= target and abs(point_count-target)/target <= 0.005}
+                        with open(os.path.join(self.scene.model_path, "budget_report.json"), "w") as f:
+                            json.dump(report, f, indent=2)
+                        if not report["budget_pass"]:
+                            raise RuntimeError("Final Gaussian budget exceeded; see budget_report.json")
+
                 if self.is_main_process and iteration in saving_iterations:
                     print(f"\n[ITER {iteration}] Saving Gaussians")
                     self.scene.save(iteration)
 
                 if self.is_main_process and iteration in checkpoint_iterations:
                     print(f"\n[ITER {iteration}] Saving Checkpoint")
-                    torch.save((self.gaussians.capture(), iteration), self.scene.model_path + f"/chkpnt{iteration}.pth")
+                    torch.save(self.capture_checkpoint(iteration), self.scene.model_path + f"/chkpnt{iteration}.pth")
         finally:
             self._close_live_logs()
+
+    def capture_checkpoint(self, iteration):
+        import numpy as np
+        if self.distributed:
+            raise RuntimeError("Full-state checkpoints currently require single GPU")
+        engine_keys = ("curr_scale", "viewpoint_indices", "view_difficulty_ema",
+                       "view_lpips_proxy_ema", "global_lpips_proxy_ema", "_last_test_psnr",
+                       "_prev_test_psnr", "_ema_photo_loss", "_prev_ema_photo_loss",
+                       "effective_densify_until_iter")
+        return dict(version=2, model=self.gaussians.capture(), iteration=iteration,
+                    exposure=self.gaussians.get_exposure.detach().clone(),
+                    exposure_optimizer=self.gaussians.exposure_optimizer.state_dict(),
+                    engine={k: getattr(self, k) for k in engine_keys},
+                    sparse={k: getattr(self.sparse_controller, k) for k in
+                            ("z", "u", "final_pruned", "contribution_ema")},
+                    camera_names=[c.image_name for c in self.viewpoint_stack],
+                    python_rng=random.getstate(), numpy_rng=np.random.get_state(),
+                    torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all())
+
+    def restore_checkpoint(self, state):
+        import numpy as np
+        if self.distributed or self.cfg.enable_adaptive_stage_controller:
+            raise RuntimeError("Full-state resume supports single GPU and fixed schedules only")
+        for k, value in state["engine"].items():
+            setattr(self, k, value)
+        cameras = {c.image_name: c for c in self.scene.getTrainCameras(self.curr_scale)}
+        self.viewpoint_stack = [cameras[name] for name in state["camera_names"]]
+        for k, value in state["sparse"].items():
+            setattr(self.sparse_controller, k, value)
+        with torch.no_grad():
+            self.gaussians.get_exposure.copy_(state["exposure"])
+        self.gaussians.exposure_optimizer.load_state_dict(state["exposure_optimizer"])
+        random.setstate(state["python_rng"])
+        np.random.set_state(state["numpy_rng"])
+        torch.set_rng_state(state["torch_rng"].cpu())
+        torch.cuda.set_rng_state_all([value.cpu() for value in state["cuda_rng"]])
 
     def _maybe_apply_adaptive_stage_extension(self, iteration, eval_results, stats):
         if not self.adaptive_stage_controller.enabled() or not self.is_main_process:

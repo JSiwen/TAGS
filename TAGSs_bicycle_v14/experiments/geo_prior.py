@@ -313,4 +313,12 @@ class GeometricPriorLoss:
             stats["geo/normal_loss"] = float(normal_loss.item())
             stats["geo/normal_mask_fraction"] = normal_mask_fraction
 
-        return total, stats
+        scale = float(getattr(self.cfg, "geo_scale", 1.0))
+        stats["geo/scale"] = scale
+        for kind in ("depth", "normal"):
+            weight = stats.get("geo/" + kind + "_weight", 0.0)
+            weighted = stats.get("geo/" + kind + "_loss", 0.0)
+            stats["geo/" + kind + "_raw"] = weighted / weight if weight else 0.0
+            stats["geo/" + kind + "_loss"] = weighted * scale
+            stats["geo/" + kind + "_weight"] = weight * scale
+        return total * scale, stats

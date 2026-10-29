@@ -128,10 +128,15 @@ class SparseController:
         keep_ratio = max(0.0, min(1.0, 1.0 - self._spa_zero_ratio()))
         prune_n = self._cap_prune_count(n - int(keep_ratio * n), n)
         keep_n = n - prune_n
+        target = int(getattr(self.cfg, "spa_target_gaussians", 0))
+        if target > 0:
+            keep_n = min(n, target)
         if keep_n <= 0 or keep_n >= n:
             self.final_pruned = True
             return {"sparse/points": n}
         protected = self._structure_protection_mask(gaussians)
+        if target > 0 and int(protected.sum().item()) > keep_n:
+            raise ValueError("Protected Gaussian union exceeds target budget")
         keep_n = max(keep_n, min(n, int(protected.sum().item())))
         scores = scores.masked_fill(protected, float("inf"))
         keep_idx = torch.topk(scores, k=keep_n, largest=True).indices

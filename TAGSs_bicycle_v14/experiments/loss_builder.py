@@ -276,6 +276,10 @@ class LossBuilder:
         view_loss_weight = max(1.0, view_loss_weight)
 
         psnr_w = self._psnr_weight(iteration)
+        stats["train/psnr_weight_original"] = psnr_w
+        stats["train/psnr_multiplier"] = float(late_state.get("psnr_multiplier", 1.0))
+        stats["train/psnr_loss_raw"] = float(psnr_loss.item())
+        stats["train/psnr_loss_weighted"] = float(psnr_loss.item()) * psnr_w * stats["train/psnr_multiplier"] * view_loss_weight
         if psnr_w > 0:
             psnr_w *= float(late_state.get("psnr_multiplier", 1.0))
             photo_loss = photo_loss + psnr_w * psnr_loss

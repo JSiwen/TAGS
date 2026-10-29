@@ -151,9 +151,18 @@ def main():
     scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
     gaussians.training_setup(opt)
     first_iter = 0
+    resume_state = None
     if args.start_checkpoint:
         map_location = torch.device(f"cuda:{dist_info['local_rank']}")
-        model_params, first_iter = torch.load(args.start_checkpoint, map_location=map_location)
+        loaded = torch.load(args.start_checkpoint, map_location=map_location, weights_only=False)
+        if isinstance(loaded, dict) and loaded.get("version") == 2:
+            resume_state = loaded
+            model_params, first_iter = loaded["model"], loaded["iteration"]
+        else:
+            if cfg.final_target_gaussians > 0:
+                raise ValueError("Fixed-budget resume requires a version 2 full-state checkpoint; retrain from scratch")
+            print("[Resume] Legacy model-only checkpoint: RNG/camera/controller continuity unavailable")
+            model_params, first_iter = loaded
         gaussians.restore(model_params, opt)
         if opt.max_gaussians > 0 and gaussians.get_xyz.shape[0] > opt.max_gaussians:
             raise ValueError(
@@ -217,6 +226,8 @@ def main():
             torch.cuda.reset_peak_memory_stats()
             import time as _time
             _t0 = _time.time()
+        if resume_state is not None:
+            engine.restore_checkpoint(resume_state)
         engine.run(first_iter, args.test_iterations, args.save_iterations, args.checkpoint_iterations)
         if is_main_process:
             try:

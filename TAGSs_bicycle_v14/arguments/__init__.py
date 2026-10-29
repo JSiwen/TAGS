@@ -287,6 +287,12 @@ class ExperimentParams(ParamGroup):
 
         # Sparse optimization settings
         self.sparse_mode = "none"  # one of: none, dash, spa, dash_spa
+        self.psnr_final_multiplier = 1.0
+        self.psnr_ramp_start = 25000
+        self.psnr_ramp_end = 27000
+        self.geo_scale = 1.0
+        self.spa_target_gaussians = 0
+        self.final_target_gaussians = 0
         self.sparse_budget_upperbound = 0  # <=0 disables budget pruning
         self.spa_interval = 1000
         self.spa_start_iter = 13000

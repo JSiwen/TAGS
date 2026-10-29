@@ -138,9 +138,31 @@ class ExperimentConfig:
     adaptive_densify_max_iter: int
     adaptive_point_budget: int
 
+    psnr_final_multiplier: float = 1.0
+    psnr_ramp_start: int = 25000
+    psnr_ramp_end: int = 27000
+    geo_scale: float = 1.0
+    spa_target_gaussians: int = 0
+    final_target_gaussians: int = 0
+
+    def __post_init__(self):
+        import math
+        if not math.isfinite(self.psnr_final_multiplier) or self.psnr_final_multiplier <= 0:
+            raise ValueError("psnr_final_multiplier must be finite and positive")
+        if not math.isfinite(self.geo_scale) or self.geo_scale < 0:
+            raise ValueError("geo_scale must be finite and nonnegative")
+        if self.psnr_ramp_end <= self.psnr_ramp_start or self.final_target_gaussians < 0:
+            raise ValueError("Invalid ramp range or Gaussian target")
+
     @staticmethod
     def from_args(args):
         return ExperimentConfig(
+            psnr_final_multiplier=args.psnr_final_multiplier,
+            psnr_ramp_start=args.psnr_ramp_start,
+            psnr_ramp_end=args.psnr_ramp_end,
+            geo_scale=args.geo_scale,
+            final_target_gaussians=args.final_target_gaussians,
+            spa_target_gaussians=args.spa_target_gaussians,
             enable_geo_prior=args.enable_geo_prior,
             enable_resolution_adaptive=args.enable_resolution_adaptive,
             enable_sparse_optimization=args.enable_sparse_optimization,
