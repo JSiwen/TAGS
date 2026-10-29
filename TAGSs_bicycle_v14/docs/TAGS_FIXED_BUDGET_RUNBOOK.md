@@ -72,3 +72,18 @@ python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --d
 驱动器保留基准记录的test_iterations（若历史配置缺失，默认7000/30000，需人工核对），防止评价时序改变动态质量决策。resolution_schedule='1853:4,6177:2,30000:1'会沿用；如同时启用resolution-aware planner，仍由原planner按其配置计算，dry-run仅展示输入参数。
 
 新增3项CPU控制器恢复检查：恢复后下一次扩展与连续运行一致、相同边界不重复执行、开关不匹配拒绝。加上3项preflight共6项通过。尚未完成真实GPU的不中断/恢复R0复现验证。动态延长可能使SPA跨越25k；若新reference的25k时SPA尚未结束，不能把25k后段候选描述为“已完成SPA”的固定拓扑实验，必须先核对实际阶段与点数日志。
+
+
+## 无 GitHub 网络时离线更新
+
+使用 tags_fixed_budget_offline.zip，可在本地用 scripts/build_fixed_budget_patch.py 从发布分支构建。上传ZIP到AutoDL任意位置，不需要解压或连接GitHub。进入原项目根目录执行：
+
+```bash
+cd /root/autodl-tmp/TAGS/TAGSs_bicycle_v14
+python /root/autodl-tmp/tags_fixed_budget_offline.zip --target "$PWD"
+python -m unittest discover -s tests -p 'test_fixed_budget*.py'
+python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --depths "$DEPTH" --case R0 --output output/tags_budget_sweep/reference_seed0_offline
+# 核对输出后同一命令加 --execute 前台启动。
+```
+
+安装器先校验包内SHA256，然后备份所有将覆盖的已有文件为项目根目录下fixed_budget_backup_*.zip，再安装并逐个核验。补丁包含完整experiments Python模块、参数定义、训练入口、驱动器、测试及文档，不包含数据或模型。根目录同名驱动器替换为兼容入口，转发至scripts/中的正式版本。安装不会启动训练。若目录此前已存在，应选择新实验输出名。
