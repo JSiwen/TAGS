@@ -2,7 +2,7 @@
 
 本次实现：PSNR smoothstep 25k–27k 倍率、geometry 最终统一缩放、SPA 固定目标选择（保护集合超过预算则报错）、最终预算报告、500 步 CSV、相机 ID/尺寸清单、v2 checkpoint（模型/优化器、曝光/曝光优化器、随机状态、相机队列、SPA、难视角 EMA）。默认倍率为 1，目标数为 0，保持旧行为。SPA 目标只对 S 组设置；R0/P/G 不改变已有裁剪规则。
 
-支持范围：单 GPU、固定时间表；不支持动态阶段控制器的公平恢复。旧 tuple checkpoint 仍可用于普通训练，但固定预算恢复会拒绝它。完整恢复只是工程接入，必须通过 GPU 的不中断/恢复 R0 实验才能证明可复现。
+支持范围：单 GPU；新增动态阶段控制器状态保存/恢复（需要含 adaptive_stage 字段的新版 checkpoint）。旧 tuple checkpoint 仍可用于普通训练，但固定预算恢复会拒绝它。完整恢复只是工程接入，必须通过 GPU 的不中断/恢复 R0 实验才能证明可复现。
 
 ## 训练命令
 
@@ -63,3 +63,12 @@ python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --d
 新版驱动器会在创建输出目录前检查八个配套模块的更新标记和基准训练配置；不完整就报错。--execute还会先加载训练CLI的--help，发现导入故障时不创建输出目录。此检查不等价于GPU短训。旧失败目录无需删除，新目录用reference_seed0_v2。不要删除新参数来绕过版本错误。
 
 特别注意：原始3DGS的cfg_args一般只有模型/渲染参数，无法恢复TAGS几何、SPA、感知损失及学习率设置。即使PLY可读并给出N0，也不构成TAGS配置冻结。原有只检查模型参数的模拟dry-run未覆盖此错误；现新增3项preflight回归检查，均通过。
+
+
+## 动态阶段基准支持更新
+
+如果 cfg_args 中 enable_adaptive_stage_controller=True，保留此开关与 resolution_schedule，不能为绕过报错改成False。新版驱动器已移除该拦截。checkpoint新增 adaptive_stage 字段，记录动态 densify_until_iter、SPA start/end 和上次扩展迭代；同时恢复有效densify边界、fullres边界和已有质量EMA。旧checkpoint如缺少该字段，动态恢复仍会拒绝；请从0运行reference生成新checkpoint。
+
+驱动器保留基准记录的test_iterations（若历史配置缺失，默认7000/30000，需人工核对），防止评价时序改变动态质量决策。resolution_schedule='1853:4,6177:2,30000:1'会沿用；如同时启用resolution-aware planner，仍由原planner按其配置计算，dry-run仅展示输入参数。
+
+新增3项CPU控制器恢复检查：恢复后下一次扩展与连续运行一致、相同边界不重复执行、开关不匹配拒绝。加上3项preflight共6项通过。尚未完成真实GPU的不中断/恢复R0复现验证。动态延长可能使SPA跨越25k；若新reference的25k时SPA尚未结束，不能把25k后段候选描述为“已完成SPA”的固定拓扑实验，必须先核对实际阶段与点数日志。

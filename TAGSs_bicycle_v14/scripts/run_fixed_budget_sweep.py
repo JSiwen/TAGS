@@ -42,7 +42,8 @@ def preflight(root, cfg):
         "experiments/geo_prior.py": ('getattr(self.cfg, "geo_scale"',),
         "experiments/loss_builder.py": ('train/psnr_loss_weighted',),
         "experiments/sparse_controller.py": ("spa_target_gaussians",),
-        "experiments/training_engine.py": ("def capture_checkpoint", "def restore_checkpoint"),
+        "experiments/training_engine.py": ("def capture_checkpoint", "def restore_checkpoint", 'adaptive_stage_controller.load_state_dict'),
+        "experiments/adaptive_stage_controller.py": ("def state_dict", "def load_state_dict"),
         "train_optimized.py": ("engine.restore_checkpoint",),
     }
     stale = []
@@ -81,8 +82,12 @@ def main():
         raise ValueError("SPA cases must train from scratch")
     if args.checkpoint and not args.checkpoint.is_file():
         raise ValueError("Checkpoint does not exist")
-    if cfg.get("enable_adaptive_stage_controller") or cfg.get("distributed"):
-        raise ValueError("Use single GPU with fixed schedules")
+    if cfg.get("distributed"):
+        raise ValueError("Use a single-GPU TAGS baseline (distributed=False)")
+    test_iterations = cfg.get("test_iterations", [7000, 30000])
+    if not isinstance(test_iterations, (list, tuple)) or not all(isinstance(i, int) for i in test_iterations):
+        raise ValueError("Invalid baseline test_iterations")
+    test_iterations = sorted(set(test_iterations) | {30000})
     # Reuse only declared CLI fields; never evaluate cfg_args as Python code.
     tree = ast.parse((ROOT / "arguments/__init__.py").read_text(encoding="utf-8"))
     known = {node.attr.lstrip("_") for node in ast.walk(tree)
@@ -103,7 +108,7 @@ def main():
         elif value is not None:
             cmd.extend(["--"+key, str(value)])
     cmd += ["--seed", str(args.seed), "--disable_viewer", "--checkpoint_iterations", "25000", "30000",
-            "--save_iterations", "30000", "--test_iterations", "30000"]
+            "--save_iterations", "30000", "--test_iterations"] + [str(i) for i in test_iterations]
     if args.checkpoint: cmd += ["--start_checkpoint", str(args.checkpoint)]
     record = dict(case=args.case, N0=n0, command=cmd, baseline=str(args.baseline),
                   valid_resume="unverified", official_test_used=True)

@@ -705,8 +705,8 @@ class TrainingEngine:
         engine_keys = ("curr_scale", "viewpoint_indices", "view_difficulty_ema",
                        "view_lpips_proxy_ema", "global_lpips_proxy_ema", "_last_test_psnr",
                        "_prev_test_psnr", "_ema_photo_loss", "_prev_ema_photo_loss",
-                       "effective_densify_until_iter")
-        return dict(version=2, model=self.gaussians.capture(), iteration=iteration,
+                       "effective_densify_until_iter", "fullres_ready_iter")
+        return dict(version=2, adaptive_stage=self.adaptive_stage_controller.state_dict(self.opt), model=self.gaussians.capture(), iteration=iteration,
                     exposure=self.gaussians.get_exposure.detach().clone(),
                     exposure_optimizer=self.gaussians.exposure_optimizer.state_dict(),
                     engine={k: getattr(self, k) for k in engine_keys},
@@ -718,8 +718,12 @@ class TrainingEngine:
 
     def restore_checkpoint(self, state):
         import numpy as np
-        if self.distributed or self.cfg.enable_adaptive_stage_controller:
-            raise RuntimeError("Full-state resume supports single GPU and fixed schedules only")
+        if self.distributed:
+            raise RuntimeError("Full-state resume currently requires single GPU")
+        if "adaptive_stage" in state:
+            self.adaptive_stage_controller.load_state_dict(state["adaptive_stage"], self.opt)
+        elif self.adaptive_stage_controller.enabled():
+            raise ValueError("Checkpoint lacks adaptive runtime state; generate a new reference checkpoint")
         for k, value in state["engine"].items():
             setattr(self, k, value)
         cameras = {c.image_name: c for c in self.scene.getTrainCameras(self.curr_scale)}
