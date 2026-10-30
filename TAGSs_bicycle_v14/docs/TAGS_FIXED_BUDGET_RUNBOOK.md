@@ -87,3 +87,17 @@ python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --d
 ```
 
 安装器先校验包内SHA256，然后备份所有将覆盖的已有文件为项目根目录下fixed_budget_backup_*.zip，再安装并逐个核验。补丁包含完整experiments Python模块、参数定义、训练入口、驱动器、测试及文档，不包含数据或模型。根目录同名驱动器替换为兼容入口，转发至scripts/中的正式版本。安装不会启动训练。若目录此前已存在，应选择新实验输出名。
+
+
+## 7000步保存失败：磁盘空间与PLY保存频率
+
+2026-10-30日志：7000步训练和test/train评估成功，在保存PLY时剩余1110 MiB，低于估算1658 MiB而停止。不得通过降低TAGGS_SAVE_PLY_MARGIN_BYTES绕过容量不足。本次修复：固定预算开启时，resolution-aware planner保留显式save_iterations；评估/阶段日志仍按原时间表执行，25k/30k checkpoint不变。普通训练旧行为保持。
+
+服务器先检查：
+```bash
+df -h . /root/autodl-tmp
+du -h --max-depth=2 /root/autodl-tmp 2>/dev/null | sort -h | tail -n 25
+find output/tags_budget_sweep/reference_seed0_offline -maxdepth 2 -type f -name 'chkpnt*.pth' -ls
+```
+
+建议为本轮预留至少20 GiB，并视checkpoint实际大小增加；这不是容量保证。扩容、转移已备份结果或换用空间足够的挂载盘均可；不要删除基准、数据或未完成checkpoint。如果只有PLY而无完整checkpoint，不符合公平Resume要求，需从0重跑并选择新输出目录。仅出现Saving Gaussians不代表完整checkpoint已保存成功。修复包须重新安装；安装本身也需要备份旧文件的空间。

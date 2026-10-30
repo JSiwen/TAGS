@@ -280,7 +280,12 @@ def apply_stage_plan(plan: StagePlan, opt, cfg, args=None) -> None:
 
     if args is not None:
         merged_test = sorted(set(getattr(args, "test_iterations", [])) | set(plan.checkpoint_iterations))
-        merged_save = sorted(set(getattr(args, "save_iterations", [])) | set(plan.checkpoint_iterations))
+        # Budget sweeps explicitly request their PLY save steps. Evaluation
+        # snapshots still run, but must not silently create multi-GB PLYs.
+        save_steps = set(getattr(args, "save_iterations", []))
+        if int(getattr(cfg, "final_target_gaussians", 0)) <= 0:
+            save_steps.update(plan.checkpoint_iterations)
+        merged_save = sorted(save_steps)
         args.test_iterations = merged_test
         args.save_iterations = merged_save
         args.live_stage_iterations = live_spec
