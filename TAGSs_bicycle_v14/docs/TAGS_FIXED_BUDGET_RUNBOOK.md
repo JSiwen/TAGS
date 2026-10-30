@@ -101,3 +101,10 @@ find output/tags_budget_sweep/reference_seed0_offline -maxdepth 2 -type f -name 
 ```
 
 建议为本轮预留至少20 GiB，并视checkpoint实际大小增加；这不是容量保证。扩容、转移已备份结果或换用空间足够的挂载盘均可；不要删除基准、数据或未完成checkpoint。如果只有PLY而无完整checkpoint，不符合公平Resume要求，需从0重跑并选择新输出目录。仅出现Saving Gaussians不代表完整checkpoint已保存成功。修复包须重新安装；安装本身也需要备份旧文件的空间。
+
+
+## 旧PyTorch恢复时报weights_only错误
+
+如果读取25k checkpoint时报TypeError: weights_only is an invalid keyword argument for Unpickler，这是旧torch.load把未知参数转发给pickle造成的版本兼容问题。入口改用experiments/checkpoint_io.py：检测torch.load签名，只在明确支持weights_only时传False，旧版本不传此参数。checkpoint内容和训练超参数不变，不需要重训reference。加载失败的输出目录已创建，重试请选R0_resume_seed0_v2等新目录，保留原失败目录。
+
+3项加载器回归检查覆盖旧签名、新签名完整状态、损坏文件异常不被重试掩盖。尚未在服务器旧PyTorch/GPU上实际恢复验证。

@@ -10,6 +10,7 @@ from gaussian_renderer import network_gui
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from experiments import ExperimentConfig, TrainingEngine
+from experiments.checkpoint_io import load_training_checkpoint
 from experiments.resolution_schedule import ResolutionSchedule
 from experiments.resolution_aware_schedule import (
     ResolutionProfiler,
@@ -154,7 +155,7 @@ def main():
     resume_state = None
     if args.start_checkpoint:
         map_location = torch.device(f"cuda:{dist_info['local_rank']}")
-        loaded = torch.load(args.start_checkpoint, map_location=map_location, weights_only=False)
+        loaded = load_training_checkpoint(torch, args.start_checkpoint, map_location=map_location)
         if isinstance(loaded, dict) and loaded.get("version") == 2:
             resume_state = loaded
             model_params, first_iter = loaded["model"], loaded["iteration"]
