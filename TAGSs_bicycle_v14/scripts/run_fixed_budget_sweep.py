@@ -9,7 +9,7 @@ import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent if SCRIPT_DIR.name == "scripts" else SCRIPT_DIR
-CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5),
+CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5), "PG1": (1.5,.5),
          "S0": (1,1), "S1": (1,1), "S2": (1,1)}
 
 def read_config(path):

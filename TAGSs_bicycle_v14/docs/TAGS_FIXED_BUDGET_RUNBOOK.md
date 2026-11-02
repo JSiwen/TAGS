@@ -34,7 +34,7 @@ Linux/AutoDL 使用相同 Python 驱动器，替换绝对路径；无需 PowerSh
 
 ## 评价与未完成验证边界
 
-本驱动继承官方 llffhold=8 并在30k评价官方test，manifest明确标记 official_test_used=true；目前没有新增独立开发集。若用这些命令筛参，必须如实报告官方测试集参与筛选，不能宣称独立开发验证结果。PG1应在单变量选择后手工传参，未提供自动选择。
+本驱动继承官方 llffhold=8 并在30k评价官方test，manifest明确标记 official_test_used=true；目前没有新增独立开发集。若用这些命令筛参，必须如实报告官方测试集参与筛选，不能宣称独立开发验证结果。PG1在单变量筛选后固定选择P2+G2（PSNR倍率1.5、geo_scale=0.5），驱动器不自动筛选候选。
 
 检查 camera_manifest.json、budget_report.json、training_curves.csv、experiment_manifest.json 和 runtime.json。预算同时要求 N_final<=N0 且差值<=0.5%；不足预算不会补点。质量目标使用未截断指标。逐视角指标仍由原 metrics.py 输出 per_view.json；本次未改指标实现、未自动生成方案的四种汇总CSV，也未完成跨run尺寸/视角断言、数据版本哈希和多seed汇总。不能把训练成功当作完整实验验收。
 
@@ -108,3 +108,19 @@ find output/tags_budget_sweep/reference_seed0_offline -maxdepth 2 -type f -name 
 如果读取25k checkpoint时报TypeError: weights_only is an invalid keyword argument for Unpickler，这是旧torch.load把未知参数转发给pickle造成的版本兼容问题。入口改用experiments/checkpoint_io.py：检测torch.load签名，只在明确支持weights_only时传False，旧版本不传此参数。checkpoint内容和训练超参数不变，不需要重训reference。加载失败的输出目录已创建，重试请选R0_resume_seed0_v2等新目录，保留原失败目录。
 
 3项加载器回归检查覆盖旧签名、新签名完整状态、损坏文件异常不被重试掩盖。尚未在服务器旧PyTorch/GPU上实际恢复验证。
+
+
+## 2026-11-02：PG1组合候选
+
+根据用户AutoDL输出，R0_resume_seed0_v2为PSNR25.3045673/SSIM0.7859414/LPIPS0.1723897；G2_seed0_retry1为25.3299465/0.7860729/0.1723238，N_final=7206331，N0=7234487，两个budget标志均为true。以上为用户提供的单种子日志，未在本地重新核验原始结果文件、相机尺寸、每视角退化或几何伪影，不构成多种子稳定性结论。
+
+PG1现在支持--case PG1，固定P2+G2=(1.5,0.5)。保持相同reference的25k checkpoint、seed0、原BASE和数据路径；从25k恢复，不能从G2的30k结果继续。优先与G2和R0比较。若组合无额外收益，保留较简单的G2，不把微小差异解释成稳定提升。
+
+```bash
+export TORCH_HOME=/root/autodl-fs/torch-cache
+export REF="$PWD/output/tags_budget_sweep/reference_seed0_diskfix"
+python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --depths "$DEPTH" --case PG1 --checkpoint "$REF/chkpnt25000.pth" --output /root/autodl-fs/output/tags_budget_sweep/PG1_seed0
+# 核对打印参数后，同一命令添加--execute。运行前检查df -h /root/autodl-fs。
+```
+
+PG1尚未进行GPU训练。质量目标仍未达到；后续需要每视角/尺寸/预算核验和预先确定的多个种子验证。官方test参与了本轮筛选，应明确披露。
