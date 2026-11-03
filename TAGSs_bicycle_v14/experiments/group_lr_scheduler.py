@@ -3,6 +3,19 @@ class GroupLRScheduler:
         self.cfg = cfg
         self._base_lrs = None
 
+    def capture_base_lrs(self, gaussians):
+        return {group["name"]: float((self._base_lrs or {}).get(id(group), group["lr"]))
+                for group in gaussians.optimizer.param_groups}
+
+    def restore_base_lrs(self, gaussians, base_lrs):
+        import math
+        groups = gaussians.optimizer.param_groups
+        if set(base_lrs) != {group["name"] for group in groups}:
+            raise ValueError("Checkpoint optimizer group names differ from current optimizer")
+        if any(not math.isfinite(float(value)) or float(value) < 0 for value in base_lrs.values()):
+            raise ValueError("Invalid checkpoint base learning rate")
+        self._base_lrs = {id(group): float(base_lrs[group["name"]]) for group in groups}
+
     def _stage(self, iteration):
         s1 = int(getattr(self.cfg, "lr_stage1_end", 6000))
         s2 = int(getattr(self.cfg, "lr_stage2_end", 18000))

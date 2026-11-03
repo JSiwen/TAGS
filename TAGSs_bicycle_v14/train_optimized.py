@@ -151,6 +151,7 @@ def main():
 
     scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
     gaussians.training_setup(opt)
+    initial_group_lrs = {g["name"]: float(g["lr"]) for g in gaussians.optimizer.param_groups}
     first_iter = 0
     resume_state = None
     if args.start_checkpoint:
@@ -228,7 +229,7 @@ def main():
             import time as _time
             _t0 = _time.time()
         if resume_state is not None:
-            engine.restore_checkpoint(resume_state)
+            engine.restore_checkpoint(resume_state, fallback_group_lrs=initial_group_lrs)
         engine.run(first_iter, args.test_iterations, args.save_iterations, args.checkpoint_iterations)
         if is_main_process:
             try:

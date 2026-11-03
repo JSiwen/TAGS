@@ -44,7 +44,8 @@ def preflight(root, cfg):
         "experiments/sparse_controller.py": ("spa_target_gaussians",),
         "experiments/training_engine.py": ("def capture_checkpoint", "def restore_checkpoint", 'adaptive_stage_controller.load_state_dict'),
         "experiments/adaptive_stage_controller.py": ("def state_dict", "def load_state_dict"),
-        "train_optimized.py": ("engine.restore_checkpoint",),
+        "train_optimized.py": ("engine.restore_checkpoint", "initial_group_lrs"),
+        "experiments/group_lr_scheduler.py": ("def capture_base_lrs", "def restore_base_lrs"),
     }
     stale = []
     for name, tokens in required.items():

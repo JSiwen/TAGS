@@ -709,7 +709,7 @@ class TrainingEngine:
                        "view_lpips_proxy_ema", "global_lpips_proxy_ema", "_last_test_psnr",
                        "_prev_test_psnr", "_ema_photo_loss", "_prev_ema_photo_loss",
                        "effective_densify_until_iter", "fullres_ready_iter")
-        return dict(version=2, adaptive_stage=self.adaptive_stage_controller.state_dict(self.opt), model=self.gaussians.capture(), iteration=iteration,
+        return dict(version=2, group_lr_base_lrs=self.group_lr_scheduler.capture_base_lrs(self.gaussians), adaptive_stage=self.adaptive_stage_controller.state_dict(self.opt), model=self.gaussians.capture(), iteration=iteration,
                     exposure=self.gaussians.get_exposure.detach().clone(),
                     exposure_optimizer=self.gaussians.exposure_optimizer.state_dict(),
                     engine={k: getattr(self, k) for k in engine_keys},
@@ -719,7 +719,7 @@ class TrainingEngine:
                     python_rng=random.getstate(), numpy_rng=np.random.get_state(),
                     torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all())
 
-    def restore_checkpoint(self, state):
+    def restore_checkpoint(self, state, fallback_group_lrs=None):
         import numpy as np
         if self.distributed:
             raise RuntimeError("Full-state resume currently requires single GPU")
@@ -727,6 +727,13 @@ class TrainingEngine:
             self.adaptive_stage_controller.load_state_dict(state["adaptive_stage"], self.opt)
         elif self.adaptive_stage_controller.enabled():
             raise ValueError("Checkpoint lacks adaptive runtime state; generate a new reference checkpoint")
+        if bool(getattr(self.cfg, "enable_group_lr_schedule", False)):
+            base_lrs = state.get("group_lr_base_lrs", fallback_group_lrs)
+            if base_lrs is None:
+                raise ValueError("Resume requires saved or fresh-optimizer base learning rates")
+            self.group_lr_scheduler.restore_base_lrs(self.gaussians, base_lrs)
+            if "group_lr_base_lrs" not in state:
+                print("[Resume] Legacy v2: restoring group LR bases from fresh optimizer configuration")
         for k, value in state["engine"].items():
             setattr(self, k, value)
         cameras = {c.image_name: c for c in self.scene.getTrainCameras(self.curr_scale)}

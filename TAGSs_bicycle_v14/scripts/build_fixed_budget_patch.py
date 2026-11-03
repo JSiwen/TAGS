@@ -22,7 +22,7 @@ def main():
     names = [name[len(PREFIX):] for name in names if name.endswith(".py")]
     names += ["arguments/__init__.py", "train_optimized.py", "AGENTS.md",
               "scripts/run_fixed_budget_sweep.py", "tests/test_fixed_budget_preflight.py",
-              "tests/test_fixed_budget_adaptive_resume.py", "tests/test_fixed_budget_saves.py", "tests/test_fixed_budget_checkpoint_io.py", "tests/test_fixed_budget_lpips.py", "docs/TAGS_FIXED_BUDGET_RUNBOOK.md",
+              "tests/test_fixed_budget_adaptive_resume.py", "tests/test_fixed_budget_saves.py", "tests/test_fixed_budget_checkpoint_io.py", "tests/test_fixed_budget_lpips.py", "tests/test_fixed_budget_group_lr_resume.py", "docs/TAGS_FIXED_BUDGET_RUNBOOK.md",
               "docs/TAGS_FIXED_BUDGET_EXPERIMENT_PLAN.md"]
     payload = {name: git("show", commit + ":" + PREFIX + name) for name in names}
     payload["run_fixed_budget_sweep.py"] = (

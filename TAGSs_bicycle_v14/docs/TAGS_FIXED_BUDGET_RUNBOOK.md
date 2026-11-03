@@ -144,3 +144,12 @@ PG1尚未进行GPU训练。质量目标仍未达到；后续需要每视角/尺�
 新增--case PG1D1（输出建议S0_PG1_D1_seed0）：保持PG1的PSNR1.5、geo0.5、LPIPS倍率1。仅启用已有_detail_loss训练GT梯度损失，init=0，start=27000，final=0.01，27k到30k按原实现线性渐入；edge quantile沿用基准。此项是梯度匹配，不是新实现的边缘加权RGB，二者不可混称。基准detail loss必须原本关闭，max_weight须>=0.01，否则拒绝。
 
 仍从S0的同一25k checkpoint恢复，不从30k继续训练，不叠加PG1L1。只有训练相机GT参与loss/mask；测试图仅用于诊断。CSV补记细节raw loss、最终weight、weighted loss和mask fraction。14项既有回归检查通过；新候选另做参数dry-run。尚无GPU或质量验证。如出现更锐利但PSNR/SSIM降低，保留为失败消融，不继续无界增加detail权重。
+
+
+## 2026-11-03：恢复学习率重复缩放修复
+
+代码审计发现GroupLRScheduler._base_lrs只在内存按param_group对象id缓存，旧v2 checkpoint未保存。恢复优化器后首次apply把已经乘过stage倍率的LR当基准，导致scaling/rotation及f_dc/f_rest/opacity重复缩放；xyz因每步从scheduler计算不受同样问题影响。原配置geo_stage3=.4、color_stage3=.55，意味着受影响组恢复后又额外乘.4/.55。此前R0均值差小于工程阈值不能证明恢复状态完整，已存在确定的状态遗漏。
+
+新checkpoint按optimizer组名保存group_lr_base_lrs，恢复时映射至新组对象。旧v2 checkpoint无此字段时，用gaussians.training_setup(opt)后、optimizer.restore之前捕获的新鲜初始组LR恢复（须保持原优化器配置与原训练一致）。不从已经缩放的checkpoint LR反推。旧实验保留为legacy-resume协议结果；不得与修复后的候选直接混作同一恢复对照。
+
+下一步优先从S0_seed0/chkpnt25000.pth跑R0，输出S0_R0_lrfix_seed0，与原不中断S0对照。先验证恢复；之后PG1如需比较必须以新R0为对照重跑。D1用户指标与PG1几乎一致，不继续增加detail权重。修复经CPU组LR恢复检查，未做GPU连续/恢复一致性验证。
