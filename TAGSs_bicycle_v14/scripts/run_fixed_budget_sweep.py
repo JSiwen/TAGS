@@ -9,7 +9,7 @@ import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent if SCRIPT_DIR.name == "scripts" else SCRIPT_DIR
-CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5), "PG1": (1.5,.5),
+CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5), "PG1": (1.5,.5), "PG1L1": (1.5,.5),
          "S0": (1,1), "S1": (1,1), "S2": (1,1)}
 
 def read_config(path):
@@ -36,9 +36,9 @@ def hash_file(f):
 
 def preflight(root, cfg):
     required = {
-        "arguments/__init__.py": ("self.psnr_final_multiplier", "self.geo_scale", "self.final_target_gaussians", "self.spa_target_gaussians"),
+        "arguments/__init__.py": ("self.psnr_final_multiplier", "self.lpips_final_multiplier", "self.geo_scale", "self.final_target_gaussians", "self.spa_target_gaussians"),
         "experiments/config.py": ("psnr_final_multiplier", "spa_target_gaussians"),
-        "experiments/balanced_late_controller.py": ("budget_psnr_multiplier",),
+        "experiments/balanced_late_controller.py": ("budget_psnr_multiplier", "budget_lpips_multiplier"),
         "experiments/geo_prior.py": ('getattr(self.cfg, "geo_scale"',),
         "experiments/loss_builder.py": ('train/psnr_loss_weighted',),
         "experiments/sparse_controller.py": ("spa_target_gaussians",),
@@ -97,7 +97,7 @@ def main():
     pm, gs = CASES[args.case]
     cfg.update(source_path=args.source, depths=args.depths, model_path=str(args.output),
                iterations=30000, eval=True, llffhold=8, psnr_final_multiplier=pm, geo_scale=gs,
-               final_target_gaussians=n0)
+               final_target_gaussians=n0, lpips_final_multiplier=.5 if args.case == "PG1L1" else 1.0)
     if args.case.startswith("S"):
         cfg["spa_target_gaussians"] = n0
         cfg["spa_protect_top_fraction"] = {"S0":.05,"S1":.08,"S2":.10}[args.case]

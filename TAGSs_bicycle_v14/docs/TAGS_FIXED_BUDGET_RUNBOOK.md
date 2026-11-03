@@ -124,3 +124,14 @@ python scripts/run_fixed_budget_sweep.py --baseline "$BASE" --source "$DATA" --d
 ```
 
 PG1尚未进行GPU训练。质量目标仍未达到；后续需要每视角/尺寸/预算核验和预先确定的多个种子验证。官方test参与了本轮筛选，应明确披露。
+
+
+## 2026-11-03：S0+PG1后期LPIPS减弱单变量
+
+用户日志显示PG1相对G2的25个视角中22个PSNR提高，无视角回退超过0.2dB，但均值增益仅0.0044766dB。实际PSNR倍率1.5、geo_scale0.5均已生效，法线损失为0，hard-view重加权关闭；不能通过修改其max参数构成有效消融。LPIPS为linear，22500起，0到0.006，每10步计算一次。
+
+新增--case PG1L1：保留PG1的PSNR1.5/geo0.5，只将lpips_final_multiplier设置0.5，使用与PSNR相同的25k-27k smoothstep区间。默认1.0不改变旧组。不能把0.006*0.5*1/10简单当作等价全步权重：当前间隔计算语义保持不变。
+
+若继承上述linear配置，则27k原LPIPS权重0.0036，有效0.0018；28.5k原0.0048，有效0.0024；30k原0.006，有效0.003（balanced controller/hard-view multiplier都为1时）。25k倍率仍为1，避免恢复第一步突然减半。CSV增加原始LPIPS权重、倍率、最终有效权重、raw/weighted loss；采样未计算的步不伪造loss值。
+
+仍用原BASE读取N0，从S0_seed0/chkpnt25000.pth恢复，输出建议S0_PG1_L1_seed0。对照是S0_PG1_seed0，不是从它的30k继续训练。只测试此单变量；未有真实GPU结果，不能保证提升或达标。严格约束PSNR>=25.50、SSIM>=0.785、LPIPS<=0.175及预算/同视角尺寸；单次通过后需独立复验。本轮官方测试集已参与筛选，应明确披露。

@@ -288,6 +288,7 @@ class ExperimentParams(ParamGroup):
         # Sparse optimization settings
         self.sparse_mode = "none"  # one of: none, dash, spa, dash_spa
         self.psnr_final_multiplier = 1.0
+        self.lpips_final_multiplier = 1.0
         self.psnr_ramp_start = 25000
         self.psnr_ramp_end = 27000
         self.geo_scale = 1.0

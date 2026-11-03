@@ -38,6 +38,12 @@ class BalancedLateController:
         x = self._ramp(iteration, start, end)
         return 1.0 + (float(getattr(self.cfg, "psnr_final_multiplier", 1.0)) - 1.0) * x*x*(3-2*x)
 
+    def budget_lpips_multiplier(self, iteration):
+        start = int(getattr(self.cfg, "psnr_ramp_start", 25000))
+        end = int(getattr(self.cfg, "psnr_ramp_end", 27000))
+        x = self._ramp(iteration, start, end)
+        return 1.0 + (float(getattr(self.cfg, "lpips_final_multiplier", 1.0)) - 1.0) * x*x*(3-2*x)
+
     def build_state(self, iteration, view_name, view_lpips_ema, global_lpips_ema):
         if not self.enabled():
             return {
@@ -46,6 +52,7 @@ class BalancedLateController:
                 "lpips_guard_multiplier": 1.0,
                 "color_align_multiplier": 1.0,
                 "psnr_multiplier": self.budget_psnr_multiplier(iteration),
+                "lpips_loss_multiplier": self.budget_lpips_multiplier(iteration),
                 "is_chronic_view": False,
             }
 
@@ -89,5 +96,6 @@ class BalancedLateController:
             "lpips_guard_multiplier": float(lpips_guard_multiplier),
             "color_align_multiplier": float(color_align_multiplier),
             "psnr_multiplier": float(psnr_multiplier) * self.budget_psnr_multiplier(iteration),
+            "lpips_loss_multiplier": self.budget_lpips_multiplier(iteration),
             "is_chronic_view": bool(is_chronic_view),
         }

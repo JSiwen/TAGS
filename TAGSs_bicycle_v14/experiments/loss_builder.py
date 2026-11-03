@@ -300,17 +300,21 @@ class LossBuilder:
             stats["train/detail_mask_fraction"] = detail_mask_fraction
 
         lpips_w = self._lpips_weight(iteration)
+        stats["train/lpips_weight_original"] = lpips_w
+        stats["train/lpips_multiplier"] = float(late_state.get("lpips_loss_multiplier", 1.0))
         lpips_interval = max(1, int(getattr(self.cfg, "lpips_loss_interval", 4)))
         if lpips_w > 0 and (iteration % lpips_interval == 0):
             lpips_loss, lpips_scale_stats = self._compute_lpips_loss(image, gt_image)
             effective_lpips_w = (
                 lpips_w
                 * float(late_state.get("lpips_guard_multiplier", 1.0))
+                * stats["train/lpips_multiplier"]
                 * view_loss_weight
             )
             total = total + effective_lpips_w * lpips_loss
             stats["train/lpips_loss"] = float(lpips_loss.item())
             stats["train/lpips_weight"] = float(effective_lpips_w)
+            stats["train/lpips_loss_weighted"] = float((effective_lpips_w * lpips_loss).item())
             stats.update(lpips_scale_stats)
 
         color_align_w = self._color_align_weight(iteration)
