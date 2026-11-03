@@ -9,7 +9,7 @@ import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent if SCRIPT_DIR.name == "scripts" else SCRIPT_DIR
-CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5), "PG1": (1.5,.5), "PG1L1": (1.5,.5),
+CASES = {"R0": (1,1), "P1": (1.25,1), "P2": (1.5,1), "G1": (1,.75), "G2": (1,.5), "PG1": (1.5,.5), "PG1L1": (1.5,.5), "PG1D1": (1.5,.5),
          "S0": (1,1), "S1": (1,1), "S2": (1,1)}
 
 def read_config(path):
@@ -98,6 +98,13 @@ def main():
     cfg.update(source_path=args.source, depths=args.depths, model_path=str(args.output),
                iterations=30000, eval=True, llffhold=8, psnr_final_multiplier=pm, geo_scale=gs,
                final_target_gaussians=n0, lpips_final_multiplier=.5 if args.case == "PG1L1" else 1.0)
+    if args.case == "PG1D1":
+        if float(cfg.get("detail_loss_weight_init", 0)) or float(cfg.get("detail_loss_weight_final", 0)):
+            raise ValueError("PG1D1 requires a baseline with detail loss disabled")
+        if float(cfg.get("detail_loss_max_weight", .05)) < .01:
+            raise ValueError("PG1D1 needs detail_loss_max_weight >= 0.01")
+        cfg.update(detail_loss_weight_init=0.0, detail_loss_weight_final=.01,
+                   detail_loss_start_iter=27000)
     if args.case.startswith("S"):
         cfg["spa_target_gaussians"] = n0
         cfg["spa_protect_top_fraction"] = {"S0":.05,"S1":.08,"S2":.10}[args.case]

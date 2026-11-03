@@ -671,7 +671,8 @@ class TrainingEngine:
                               "train/psnr_loss_weighted", "train/psnr_weight_original", "train/psnr_multiplier",
                               "train/lpips_weight_original", "train/lpips_multiplier", "train/lpips_weight",
                               "train/lpips_loss", "train/lpips_loss_weighted",
-                              "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
+                              "train/detail_loss", "train/detail_weight", "train/detail_loss_weighted",
+                              "train/detail_mask_fraction", "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
                     path = os.path.join(self.scene.model_path, "training_curves.csv")
                     exists = os.path.exists(path)
                     with open(path, "a", newline="") as f:

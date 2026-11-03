@@ -297,6 +297,7 @@ class LossBuilder:
             total = total + effective_detail_w * detail_loss
             stats["train/detail_loss"] = float(detail_loss.item())
             stats["train/detail_weight"] = float(effective_detail_w)
+            stats["train/detail_loss_weighted"] = float((effective_detail_w * detail_loss).item())
             stats["train/detail_mask_fraction"] = detail_mask_fraction
 
         lpips_w = self._lpips_weight(iteration)
