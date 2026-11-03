@@ -164,3 +164,14 @@ seed1用户轨迹：25k=7202214，28.5k=7198609，29k=7198113，30k=7197180。�
 几何统计进入training_curves.csv，包含floor、候选数、因floor阻止的数量与实际裁剪数。新报告和experiment_manifest记录budget_policy。规则须对全部种子与对照/候选统一应用；旧报告不得改标签冒充新协议。seed0旧轨迹从未触及下限时预计不受影响，仍需记录/核验，而非直接宣称与新协议一致。
 
 先从seed1原S0的25k完整checkpoint运行R0 --seed 1 --budget-policy post-spa-floor，输出S0_R0_floor_seed1；不是从已低于下限的30k继续。原BASE及N0不变。该比较引入新数量策略，不是原协议的无改动恢复验证。20项CPU回归检查通过；尚未GPU验证策略、质量或泛化。
+
+
+## 2026-11-03：恢复时必须保留源checkpoint的SPA结构配置
+
+seed1 floor恢复报错时约27k数量7170103，已明显低于下限。失败命令确实未传spa_target_gaussians，因此恢复入口用BASE的默认0覆盖了S0训练的7234487。旧v2只保存SPA张量和final_pruned，未保存结构配置；若seed1动态SPA尚未在25k完成，后续final prune就可能按prune_ratio2及30000上限额外裁剪。上一版仅约束SPA完成后的geometry，未覆盖此配置遗漏。不能去掉下限断言绕过错误，也不能假定seed1与seed0一样25k时已完成SPA。
+
+驱动器现在读取checkpoint同目录cfg_args，只继承SPA/稀疏结构配置，不覆盖新候选的geo/PSNR/LPIPS等损失选择；缺少源cfg_args拒绝恢复。新checkpoint嵌入sparse_config，恢复时先应用它，再恢复adaptive_stage运行时边界，避免把静态cfg_args当作最终SPA时序。打印[Resume SPA]的target/protect/end/final_pruned/points，manifest保存源cfg路径、哈希和继承内容。原BASE仍用于N0和其他基准设置。
+
+应从原S0_seed1/chkpnt25000.pth重跑R0 --seed 1 --budget-policy post-spa-floor，输出S0_R0_floor_seed1_v2。启动命令中必须包含--spa_target_gaussians 7234487，不能从此次失败中间点数继续。此次源配置继承属于恢复修复，下限策略仍是独立的新协议；所有后续对照/种子须统一采用。原始从0训练的S0不受恢复配置遗漏影响；此前恢复候选若SPA已经final_pruned则此SPA终末裁剪遗漏不再触发，但未检查的seed不可默认等价。
+
+4项新增CPU检查覆盖源结构继承、损失权重不被覆盖、缺失配置拒绝、checkpoint结构配置保存恢复及非法覆盖拒绝；共24项通过。GPU/真实seed1轨迹尚待验证。

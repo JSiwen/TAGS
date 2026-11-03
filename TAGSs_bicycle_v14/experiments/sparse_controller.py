@@ -10,6 +10,18 @@ class SparseController:
         self.final_pruned = False
         self.contribution_ema = None
 
+    def capture_config(self):
+        return {key: value for key, value in vars(self.cfg).items()
+                if key.startswith("spa_") or key in (
+                    "prune_ratio2", "rho_lr", "sparse_mode", "enable_sparse_optimization", "sparse_budget_upperbound")}
+
+    def restore_config(self, state):
+        for key, value in state.items():
+            if not (key.startswith("spa_") or key in (
+                    "prune_ratio2", "rho_lr", "sparse_mode", "enable_sparse_optimization", "sparse_budget_upperbound")):
+                raise ValueError("Unexpected checkpoint sparse config key: " + key)
+            setattr(self.cfg, key, value)
+
     def apply(self, iteration, gaussians, scene, opt, render_pkg, train_state=None, sync_fn=None):
         if not self.cfg.enable_sparse_optimization:
             return {}

@@ -716,7 +716,7 @@ class TrainingEngine:
                        "view_lpips_proxy_ema", "global_lpips_proxy_ema", "_last_test_psnr",
                        "_prev_test_psnr", "_ema_photo_loss", "_prev_ema_photo_loss",
                        "effective_densify_until_iter", "fullres_ready_iter")
-        return dict(version=2, group_lr_base_lrs=self.group_lr_scheduler.capture_base_lrs(self.gaussians), adaptive_stage=self.adaptive_stage_controller.state_dict(self.opt), model=self.gaussians.capture(), iteration=iteration,
+        return dict(version=2, sparse_config=self.sparse_controller.capture_config(), group_lr_base_lrs=self.group_lr_scheduler.capture_base_lrs(self.gaussians), adaptive_stage=self.adaptive_stage_controller.state_dict(self.opt), model=self.gaussians.capture(), iteration=iteration,
                     exposure=self.gaussians.get_exposure.detach().clone(),
                     exposure_optimizer=self.gaussians.exposure_optimizer.state_dict(),
                     engine={k: getattr(self, k) for k in engine_keys},
@@ -730,6 +730,10 @@ class TrainingEngine:
         import numpy as np
         if self.distributed:
             raise RuntimeError("Full-state resume currently requires single GPU")
+        if "sparse_config" in state:
+            self.sparse_controller.restore_config(state["sparse_config"])
+        else:
+            print("[Resume] Legacy v2: SPA settings must be inherited from checkpoint source cfg_args")
         if "adaptive_stage" in state:
             self.adaptive_stage_controller.load_state_dict(state["adaptive_stage"], self.opt)
         elif self.adaptive_stage_controller.enabled():
@@ -747,6 +751,9 @@ class TrainingEngine:
         self.viewpoint_stack = [cameras[name] for name in state["camera_names"]]
         for k, value in state["sparse"].items():
             setattr(self.sparse_controller, k, value)
+        print("[Resume SPA] target={} protect={} end={} final_pruned={} points={}".format(
+            self.cfg.spa_target_gaussians, self.cfg.spa_protect_top_fraction, self.cfg.spa_end_iter,
+            self.sparse_controller.final_pruned, int(self.gaussians.get_xyz.shape[0])))
         with torch.no_grad():
             self.gaussians.get_exposure.copy_(state["exposure"])
         self.gaussians.exposure_optimizer.load_state_dict(state["exposure_optimizer"])

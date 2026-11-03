@@ -18,6 +18,18 @@ def read_config(path):
         raise ValueError("Expected cfg_args Namespace")
     return {k.arg: ast.literal_eval(k.value) for k in node.keywords}
 
+def inherit_checkpoint_structure(cfg, checkpoint):
+    source = checkpoint.parent / "cfg_args"
+    if not source.is_file():
+        raise ValueError("Checkpoint source cfg_args missing; cannot safely preserve SPA protocol: " + str(source))
+    source_cfg = read_config(source)
+    keys = {key for key in source_cfg if key.startswith("spa_")} | {
+        "prune_ratio2", "rho_lr", "sparse_mode", "enable_sparse_optimization", "sparse_budget_upperbound"}
+    inherited = {key: source_cfg[key] for key in keys if key in source_cfg}
+    cfg.update(inherited)
+    return {"path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "values": inherited}
+
+
 def ply_count(path):
     with path.open("rb") as f:
         for _ in range(200):
@@ -42,7 +54,7 @@ def preflight(root, cfg):
         "experiments/balanced_late_controller.py": ("budget_psnr_multiplier", "budget_lpips_multiplier"),
         "experiments/geo_prior.py": ('getattr(self.cfg, "geo_scale"',),
         "experiments/loss_builder.py": ('train/psnr_loss_weighted',),
-        "experiments/sparse_controller.py": ("spa_target_gaussians",),
+        "experiments/sparse_controller.py": ("spa_target_gaussians", "def capture_config", "def restore_config"),
         "experiments/training_engine.py": ("def capture_checkpoint", "def restore_checkpoint", 'adaptive_stage_controller.load_state_dict'),
         "experiments/adaptive_stage_controller.py": ("def state_dict", "def load_state_dict"),
         "train_optimized.py": ("engine.restore_checkpoint", "initial_group_lrs"),
@@ -85,6 +97,10 @@ def main():
         raise ValueError("SPA cases must train from scratch")
     if args.checkpoint and not args.checkpoint.is_file():
         raise ValueError("Checkpoint does not exist")
+    checkpoint_structure = inherit_checkpoint_structure(cfg, args.checkpoint) if args.checkpoint else None
+    source_target = int(cfg.get("spa_target_gaussians", 0))
+    if args.checkpoint and source_target > 0 and source_target != n0:
+        raise ValueError("Checkpoint SPA target differs from baseline N0; use a matching protocol")
     if cfg.get("distributed"):
         raise ValueError("Use a single-GPU TAGS baseline (distributed=False)")
     test_iterations = cfg.get("test_iterations", [7000, 30000])
@@ -121,7 +137,7 @@ def main():
             "--save_iterations", "30000", "--test_iterations"] + [str(i) for i in test_iterations]
     if args.checkpoint: cmd += ["--start_checkpoint", str(args.checkpoint)]
     record = dict(case=args.case, N0=n0, command=cmd, baseline=str(args.baseline),
-                  valid_resume="unverified", official_test_used=True, budget_policy=args.budget_policy)
+                  valid_resume="unverified", official_test_used=True, budget_policy=args.budget_policy, checkpoint_structure=checkpoint_structure)
     print(json.dumps(record, indent=2, ensure_ascii=False))
     if not args.execute: return
     # Check the exact generated command before creating any experiment output.
