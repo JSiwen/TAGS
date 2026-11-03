@@ -11,6 +11,7 @@ from gaussian_renderer import render
 from .evaluator import EvaluationReporter
 from .geo_prior import GeometricPriorLoss
 from .geometry_controller import GeometryController
+from .budget_policy import matched_budget_floor
 from .group_lr_scheduler import GroupLRScheduler
 from .loss_builder import LossBuilder
 from .balanced_late_controller import BalancedLateController
@@ -625,7 +626,11 @@ class TrainingEngine:
                 if self.tb_writer:
                     for key, value in sparse_stats.items():
                         self.tb_writer.add_scalar(key, value, iteration)
-                geometry_stats = self.geometry_controller.apply(iteration, self.gaussians)
+                budget_floor = 0
+                if bool(getattr(self.cfg, "post_spa_budget_floor", False)) and self.sparse_controller.final_pruned:
+                    budget_floor = matched_budget_floor(self.cfg.final_target_gaussians)
+                geometry_stats = self.geometry_controller.apply(iteration, self.gaussians, min_gaussians=budget_floor)
+                stats.update(geometry_stats)
                 if self.tb_writer:
                     for key, value in geometry_stats.items():
                         self.tb_writer.add_scalar(key, value, iteration)
@@ -672,7 +677,8 @@ class TrainingEngine:
                               "train/lpips_weight_original", "train/lpips_multiplier", "train/lpips_weight",
                               "train/lpips_loss", "train/lpips_loss_weighted",
                               "train/detail_loss", "train/detail_weight", "train/detail_loss_weighted",
-                              "train/detail_mask_fraction", "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
+                              "train/detail_mask_fraction", "geometry/budget_floor", "geometry/prune_candidates",
+                              "geometry/prune_blocked", "geometry/pruned_points", "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
                     path = os.path.join(self.scene.model_path, "training_curves.csv")
                     exists = os.path.exists(path)
                     with open(path, "a", newline="") as f:
@@ -684,6 +690,7 @@ class TrainingEngine:
                     target = int(getattr(self.cfg, "final_target_gaussians", 0))
                     if target > 0:
                         report = {"N0": target, "N_final": point_count,
+                                  "budget_policy": "post-spa-floor" if getattr(self.cfg, "post_spa_budget_floor", False) else "legacy",
                                   "budget_pass": point_count <= target,
                                   "matched_budget_pass": point_count <= target and abs(point_count-target)/target <= 0.005}
                         with open(os.path.join(self.scene.model_path, "budget_report.json"), "w") as f:

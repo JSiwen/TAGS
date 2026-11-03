@@ -145,9 +145,12 @@ class ExperimentConfig:
     geo_scale: float = 1.0
     spa_target_gaussians: int = 0
     final_target_gaussians: int = 0
+    post_spa_budget_floor: bool = False
 
     def __post_init__(self):
         import math
+        if self.post_spa_budget_floor and self.final_target_gaussians <= 0:
+            raise ValueError("post_spa_budget_floor requires final_target_gaussians")
         if not math.isfinite(self.psnr_final_multiplier) or self.psnr_final_multiplier <= 0:
             raise ValueError("psnr_final_multiplier must be finite and positive")
         if not math.isfinite(self.lpips_final_multiplier) or self.lpips_final_multiplier < 0:
@@ -166,6 +169,7 @@ class ExperimentConfig:
             psnr_ramp_end=args.psnr_ramp_end,
             geo_scale=args.geo_scale,
             final_target_gaussians=args.final_target_gaussians,
+            post_spa_budget_floor=args.post_spa_budget_floor,
             spa_target_gaussians=args.spa_target_gaussians,
             enable_geo_prior=args.enable_geo_prior,
             enable_resolution_adaptive=args.enable_resolution_adaptive,

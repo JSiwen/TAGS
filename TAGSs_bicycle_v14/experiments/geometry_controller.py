@@ -1,4 +1,5 @@
 import torch
+from .budget_policy import allowed_geometry_prunes
 
 
 class GeometryController:
@@ -11,7 +12,7 @@ class GeometryController:
         grad = gaussians.xyz_gradient_accum.squeeze() / gaussians.denom.squeeze().clamp_min(1.0)
         return grad.detach()
 
-    def apply(self, iteration, gaussians):
+    def apply(self, iteration, gaussians, min_gaussians=0):
         if not getattr(self.cfg, "enable_geometry_controller", False):
             return {}
         if iteration < int(getattr(self.cfg, "geometry_start_iter", 0)):
@@ -45,6 +46,21 @@ class GeometryController:
             min_opacity = float(getattr(self.cfg, "geometry_min_opacity", 0.008))
             prune_scale_factor = float(getattr(self.cfg, "geometry_prune_scale_factor", 0.85))
             prune_mask = oversized & (opacity < min_opacity) & (scales > (scale_cap * prune_scale_factor)) & (~protected)
+
+            if min_gaussians > 0:
+                requested = int(prune_mask.sum().item())
+                allowed = allowed_geometry_prunes(int(scales.numel()), requested, min_gaussians)
+                stats["geometry/budget_floor"] = float(min_gaussians)
+                stats["geometry/prune_candidates"] = float(requested)
+                stats["geometry/prune_blocked"] = float(requested - allowed)
+                if allowed < requested:
+                    candidates = torch.nonzero(prune_mask, as_tuple=False).reshape(-1)
+                    prune_mask = torch.zeros_like(prune_mask)
+                    if allowed > 0:
+                        # Keep existing eligibility/protection; remove the lowest
+                        # opacity eligible points first within the allowance.
+                        chosen = torch.topk(opacity[candidates], k=allowed, largest=False).indices
+                        prune_mask[candidates[chosen]] = True
 
             if prune_mask.any():
                 before = int(scales.numel())

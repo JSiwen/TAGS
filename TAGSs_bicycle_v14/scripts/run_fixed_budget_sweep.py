@@ -37,6 +37,7 @@ def hash_file(f):
 def preflight(root, cfg):
     required = {
         "arguments/__init__.py": ("self.psnr_final_multiplier", "self.lpips_final_multiplier", "self.geo_scale", "self.final_target_gaussians", "self.spa_target_gaussians"),
+        "experiments/geometry_controller.py": ("min_gaussians", "allowed_geometry_prunes"),
         "experiments/config.py": ("psnr_final_multiplier", "spa_target_gaussians"),
         "experiments/balanced_late_controller.py": ("budget_psnr_multiplier", "budget_lpips_multiplier"),
         "experiments/geo_prior.py": ('getattr(self.cfg, "geo_scale"',),
@@ -72,6 +73,7 @@ def main():
     ap.add_argument("--checkpoint", type=Path)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--budget-policy", choices=("legacy", "post-spa-floor"), default="legacy")
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
     if args.output.exists():
@@ -98,7 +100,7 @@ def main():
     pm, gs = CASES[args.case]
     cfg.update(source_path=args.source, depths=args.depths, model_path=str(args.output),
                iterations=30000, eval=True, llffhold=8, psnr_final_multiplier=pm, geo_scale=gs,
-               final_target_gaussians=n0, lpips_final_multiplier=.5 if args.case == "PG1L1" else 1.0)
+               final_target_gaussians=n0, post_spa_budget_floor=args.budget_policy == "post-spa-floor", lpips_final_multiplier=.5 if args.case == "PG1L1" else 1.0)
     if args.case == "PG1D1":
         if float(cfg.get("detail_loss_weight_init", 0)) or float(cfg.get("detail_loss_weight_final", 0)):
             raise ValueError("PG1D1 requires a baseline with detail loss disabled")
@@ -119,7 +121,7 @@ def main():
             "--save_iterations", "30000", "--test_iterations"] + [str(i) for i in test_iterations]
     if args.checkpoint: cmd += ["--start_checkpoint", str(args.checkpoint)]
     record = dict(case=args.case, N0=n0, command=cmd, baseline=str(args.baseline),
-                  valid_resume="unverified", official_test_used=True)
+                  valid_resume="unverified", official_test_used=True, budget_policy=args.budget_policy)
     print(json.dumps(record, indent=2, ensure_ascii=False))
     if not args.execute: return
     # Check the exact generated command before creating any experiment output.

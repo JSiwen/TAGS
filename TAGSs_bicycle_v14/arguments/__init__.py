@@ -294,6 +294,7 @@ class ExperimentParams(ParamGroup):
         self.geo_scale = 1.0
         self.spa_target_gaussians = 0
         self.final_target_gaussians = 0
+        self.post_spa_budget_floor = False
         self.sparse_budget_upperbound = 0  # <=0 disables budget pruning
         self.spa_interval = 1000
         self.spa_start_iter = 13000

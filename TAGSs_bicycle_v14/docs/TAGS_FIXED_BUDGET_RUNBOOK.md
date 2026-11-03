@@ -153,3 +153,14 @@ PG1尚未进行GPU训练。质量目标仍未达到；后续需要每视角/尺�
 新checkpoint按optimizer组名保存group_lr_base_lrs，恢复时映射至新组对象。旧v2 checkpoint无此字段时，用gaussians.training_setup(opt)后、optimizer.restore之前捕获的新鲜初始组LR恢复（须保持原优化器配置与原训练一致）。不从已经缩放的checkpoint LR反推。旧实验保留为legacy-resume协议结果；不得与修复后的候选直接混作同一恢复对照。
 
 下一步优先从S0_seed0/chkpnt25000.pth跑R0，输出S0_R0_lrfix_seed0，与原不中断S0对照。先验证恢复；之后PG1如需比较必须以新R0为对照重跑。D1用户指标与PG1几乎一致，不继续增加detail权重。修复经CPU组LR恢复检查，未做GPU连续/恢复一致性验证。
+
+
+## 2026-11-03：统一post-SPA数量下限协议（可选，默认关闭）
+
+seed1用户轨迹：25k=7202214，28.5k=7198609，29k=7198113，30k=7197180。严格最低数量7198315在29k被跌破，符合每250步几何清理继续删点的代码路径。cfg_args的spa_end_iter可能不含运行时动态覆盖，不可独自作为最终时序证据。
+
+新--budget-policy post-spa-floor显式启用post_spa_budget_floor。保留0.5%门槛，精确整数下限Nmin=N0-N0//200。SPA完成后，几何清理只允许删到Nmin；原保护mask与候选条件保留，候选过多时优先删除其中opacity最低者。既不复制补点，也不末次回填。已低于下限的模型报错，不虚构严格通过。默认legacy不改变旧结果；此规则不约束其他剪枝器，最终预算报告仍必须检查。
+
+几何统计进入training_curves.csv，包含floor、候选数、因floor阻止的数量与实际裁剪数。新报告和experiment_manifest记录budget_policy。规则须对全部种子与对照/候选统一应用；旧报告不得改标签冒充新协议。seed0旧轨迹从未触及下限时预计不受影响，仍需记录/核验，而非直接宣称与新协议一致。
+
+先从seed1原S0的25k完整checkpoint运行R0 --seed 1 --budget-policy post-spa-floor，输出S0_R0_floor_seed1；不是从已低于下限的30k继续。原BASE及N0不变。该比较引入新数量策略，不是原协议的无改动恢复验证。20项CPU回归检查通过；尚未GPU验证策略、质量或泛化。
