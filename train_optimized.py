@@ -215,6 +215,12 @@ def main():
             dist.barrier(device_ids=[dist_info["local_rank"]])
 
     try:
+        if is_main_process:
+            save_steps = sorted(set(int(i) for i in args.save_iterations))
+            print(
+                f"[PLY] save_iterations={save_steps}; "
+                f"no_save_schedule_point_clouds={bool(args.no_save_schedule_point_clouds)}"
+            )
         engine = TrainingEngine(
             dataset=dataset,
             opt=opt,

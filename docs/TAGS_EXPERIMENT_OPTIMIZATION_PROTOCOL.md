@@ -140,12 +140,13 @@ run_tags() {
   fi
   mkdir -p "$model"
   CUDA_VISIBLE_DEVICES=0 TAGGS_CPU_KNN_INIT=1 \
-    python train_optimized.py "${COMMON[@]}" -m "$model" --seed "$seed" "$@" \
+    python train_optimized.py "${COMMON[@]}" -m "$model" --seed "$seed" \
+    --save_iterations 28500 30000 --no_save_schedule_point_clouds "$@" \
     2>&1 | tee "$log"
 }
 ```
 
-使用全新模型名；不要向 `run_tags` 传与公共参数重复的选项。若 shell 的 `pipefail` 未开启，训练管道退出码可能由 `tee` 覆盖，建议在定义函数前执行 `set -o pipefail`。`TAGGS_CPU_KNN_INIT=1` 与 A800 包装脚本的建议一致；记录是否启用。
+使用全新模型名；不要向 `run_tags` 传与公共参数重复的选项。保存策略在函数调用本身再次强制指定，所以即使 `$COMMON` 被旧 shell 初始化过，也不会把阶段计划中的检查点加入 PLY 保存列表。每次开新终端后，必须重新执行第 3 节的变量和函数定义；训练开头应看到 `[PLY] save_iterations=[28500, 30000]`。若列表包含其它迭代，先停止，不要继续耗费磁盘。若 shell 的 `pipefail` 未开启，训练管道退出码可能由 `tee` 覆盖，建议在定义函数前执行 `set -o pipefail`。`TAGGS_CPU_KNN_INIT=1` 与 A800 包装脚本的建议一致；记录是否启用。
 
 ## 4. 阶段 1：v16 历史配方迁移复现
 
@@ -277,6 +278,7 @@ python scripts/evaluate_depth_per_view.py -m "$MODEL" --iteration 30000 --split 
 ## 9. 限制和待办
 
 - AutoDL A800 是迁移复现目标，不等同 RTX 3080 原环境；质量数值按硬件/协议分组记录。Bicycle 统一使用与原始 3DGS `-r 4` 相同的 `images_4` 输入，并以 TAGS `--resolution 1` 保持其原生尺寸。旧 3080 `resolution=800` 结果不可与本次数字直接合并。
+- 训练开始前必须检查 `[PLY] save_iterations` 日志只包含 28500 和 30000；若 CLI 不识别 `--no_save_schedule_point_clouds`，应停止并更新 AutoDL checkout 到包含此参数的代码版本，不能删除该参数继续运行。
 - 深度编码/单位判断是完整训练前阻断项；本文不声称当前深度链路已验证正确。
 - 外部法线支持尚未实现；C 组须先开发 CLI/数据加载/可微预测端并检查坐标与梯度，再执行训练。
 - 旧 checkpoint 的学习率状态及 SPA 配置曾出现恢复遗漏。本方案从头训练；以后若用 resume，先单独验证连续/恢复一致性。
