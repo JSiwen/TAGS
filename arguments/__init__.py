@@ -193,6 +193,9 @@ class ExperimentParams(ParamGroup):
         self.enable_multiscale_lpips = False
         self.lpips_multiscale_scales = "1.0,0.5,0.25"
         self.lpips_multiscale_weights = "0.5,0.3,0.2"
+        # Staged LPIPS schedule: "iter:weight,iter:weight,..." (used when lpips_loss_schedule="staged").
+        # Example (TAGS §4.3.2 staged): "0:0.004,8000:0.001,13000:0.001,25000:0.0"
+        self.lpips_loss_staged_iters = ""
 
         # Differentiable PSNR supervision. Minimizes a scaled log-MSE proxy,
         # which preserves PSNR ordering while keeping gradients well-scaled.
@@ -284,6 +287,14 @@ class ExperimentParams(ParamGroup):
 
         # Sparse optimization settings
         self.sparse_mode = "none"  # one of: none, dash, spa, dash_spa
+        self.psnr_final_multiplier = 1.0
+        self.lpips_final_multiplier = 1.0
+        self.psnr_ramp_start = 25000
+        self.psnr_ramp_end = 27000
+        self.geo_scale = 1.0
+        self.spa_target_gaussians = 0
+        self.final_target_gaussians = 0
+        self.post_spa_budget_floor = False
         self.sparse_budget_upperbound = 0  # <=0 disables budget pruning
         self.spa_interval = 1000
         self.spa_start_iter = 13000

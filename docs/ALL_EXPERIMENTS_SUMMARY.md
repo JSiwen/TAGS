@@ -154,3 +154,13 @@ python scripts\summarize_vr_room_e4.py --measure-fps 1 --fps-warmup 10 --fps-rep
 python scripts\summarize_vr_room_e4b.py
 python scripts\summarize_bicycle_e4_vs_dn.py
 ```
+
+---
+
+## 附录 B：exp4 v2 续跑 / wandb 配套文档 (2026-10-14)
+
+- **续跑总览** (本仓库所有脚本的 SKIP_COMPLETED / AUTO_RESUME 现状 + 实战速查): `docs/EXP4_RESUME_SKILL.md`
+- **§4.5 小结模板** (5-seed 跑完手工填): `docs/SECTION_4_5_TEMPLATE.md`
+- **§4.6 全对比表 generator** (跑完 5-seed 自动出): `docs/SECTION_4_6_FULL_COMPARISON.md` ← `python scripts\build_section_4_6.py` 再生
+- **环境一键配置**: `scripts\exp4_env.ps1` (`. .\scripts\exp4_env.ps1` 在新 session dot-source)
+- **bicycle 5-seed summarize v2** (含 5-seed 聚合 + wandb cross-check + winner gate): `scripts\summarize_bicycle_e4_vs_dn.py --help`

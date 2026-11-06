@@ -112,6 +112,33 @@ class LossBuilder:
         schedule = str(getattr(self.cfg, "lpips_loss_schedule", "linear")).strip().lower()
         if schedule == "step":
             return final_w
+        if schedule == "staged":
+            # 分阶段调度: 形如 "iter:weight,iter:weight,..."
+            # 例: "0:0.004,8000:0.001,25000:0.0" (TAGS §4.3.2 staged 调度)
+            spec = str(getattr(self.cfg, "lpips_loss_staged_iters", "")).strip()
+            if not spec:
+                return final_w
+            checkpoints = []
+            for token in spec.replace(";", ",").split(","):
+                token = token.strip()
+                if not token or ":" not in token:
+                    continue
+                parts = token.split(":", 1)
+                try:
+                    checkpoints.append((int(parts[0].strip()), float(parts[1].strip())))
+                except ValueError:
+                    continue
+            checkpoints.sort(key=lambda x: x[0])
+            if not checkpoints:
+                return final_w
+            # 找到 iter 之前最近的 checkpoint
+            current = checkpoints[0][1]
+            for iter_thresh, weight in checkpoints:
+                if iteration >= iter_thresh:
+                    current = weight
+                else:
+                    break
+            return current
         span = max(1, int(self.opt.iterations) - start_iter)
         progress = min(1.0, max(0.0, float(iteration - start_iter) / float(span)))
         return init_w + (final_w - init_w) * progress
@@ -249,6 +276,10 @@ class LossBuilder:
         view_loss_weight = max(1.0, view_loss_weight)
 
         psnr_w = self._psnr_weight(iteration)
+        stats["train/psnr_weight_original"] = psnr_w
+        stats["train/psnr_multiplier"] = float(late_state.get("psnr_multiplier", 1.0))
+        stats["train/psnr_loss_raw"] = float(psnr_loss.item())
+        stats["train/psnr_loss_weighted"] = float(psnr_loss.item()) * psnr_w * stats["train/psnr_multiplier"] * view_loss_weight
         if psnr_w > 0:
             psnr_w *= float(late_state.get("psnr_multiplier", 1.0))
             photo_loss = photo_loss + psnr_w * psnr_loss
@@ -266,20 +297,25 @@ class LossBuilder:
             total = total + effective_detail_w * detail_loss
             stats["train/detail_loss"] = float(detail_loss.item())
             stats["train/detail_weight"] = float(effective_detail_w)
+            stats["train/detail_loss_weighted"] = float((effective_detail_w * detail_loss).item())
             stats["train/detail_mask_fraction"] = detail_mask_fraction
 
         lpips_w = self._lpips_weight(iteration)
+        stats["train/lpips_weight_original"] = lpips_w
+        stats["train/lpips_multiplier"] = float(late_state.get("lpips_loss_multiplier", 1.0))
         lpips_interval = max(1, int(getattr(self.cfg, "lpips_loss_interval", 4)))
         if lpips_w > 0 and (iteration % lpips_interval == 0):
             lpips_loss, lpips_scale_stats = self._compute_lpips_loss(image, gt_image)
             effective_lpips_w = (
                 lpips_w
                 * float(late_state.get("lpips_guard_multiplier", 1.0))
+                * stats["train/lpips_multiplier"]
                 * view_loss_weight
             )
             total = total + effective_lpips_w * lpips_loss
             stats["train/lpips_loss"] = float(lpips_loss.item())
             stats["train/lpips_weight"] = float(effective_lpips_w)
+            stats["train/lpips_loss_weighted"] = float((effective_lpips_w * lpips_loss).item())
             stats.update(lpips_scale_stats)
 
         color_align_w = self._color_align_weight(iteration)

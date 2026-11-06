@@ -10,6 +10,7 @@ from gaussian_renderer import network_gui
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from experiments import ExperimentConfig, TrainingEngine
+from experiments.checkpoint_io import load_training_checkpoint
 from experiments.resolution_schedule import ResolutionSchedule
 from experiments.resolution_aware_schedule import (
     ResolutionProfiler,
@@ -89,6 +90,10 @@ def main():
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0, help="RNG seed for reproducibility.")
+    # ===== v3 Group A: 记录训练元数据 (B 改动, 2026-10-19) =====
+    # 在 "Training complete." 前由 TrainingEngine.run() 写 runtime.json
+    # runner 后续从 runtime.json 解析 wall_time + peak_vram, 写 summary.json
+
     parser.add_argument("--distributed", action="store_true", default=False)
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--dist_backend", type=str, default="nccl")
@@ -146,10 +151,20 @@ def main():
 
     scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
     gaussians.training_setup(opt)
+    initial_group_lrs = {g["name"]: float(g["lr"]) for g in gaussians.optimizer.param_groups}
     first_iter = 0
+    resume_state = None
     if args.start_checkpoint:
         map_location = torch.device(f"cuda:{dist_info['local_rank']}")
-        model_params, first_iter = torch.load(args.start_checkpoint, map_location=map_location)
+        loaded = load_training_checkpoint(torch, args.start_checkpoint, map_location=map_location)
+        if isinstance(loaded, dict) and loaded.get("version") == 2:
+            resume_state = loaded
+            model_params, first_iter = loaded["model"], loaded["iteration"]
+        else:
+            if cfg.final_target_gaussians > 0:
+                raise ValueError("Fixed-budget resume requires a version 2 full-state checkpoint; retrain from scratch")
+            print("[Resume] Legacy model-only checkpoint: RNG/camera/controller continuity unavailable")
+            model_params, first_iter = loaded
         gaussians.restore(model_params, opt)
         if opt.max_gaussians > 0 and gaussians.get_xyz.shape[0] > opt.max_gaussians:
             raise ValueError(
@@ -207,7 +222,33 @@ def main():
             rank=dist_info["rank"],
             world_size=dist_info["world_size"],
         )
+        # ===== v3 Group A: 记录训练元数据 (B 改动, 2026-10-19) =====
+        # 在 run 前后打点, 训练结束后写 runtime.json (含 wall_time_sec + peak_vram_mb)
+        if is_main_process and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+            import time as _time
+            _t0 = _time.time()
+        if resume_state is not None:
+            engine.restore_checkpoint(resume_state, fallback_group_lrs=initial_group_lrs)
         engine.run(first_iter, args.test_iterations, args.save_iterations, args.checkpoint_iterations)
+        if is_main_process:
+            try:
+                import time as _time
+                import json as _json
+                _elapsed = _time.time() - _t0
+                _peak_mb = torch.cuda.max_memory_allocated() / (1024 * 1024) if torch.cuda.is_available() else 0.0
+                _runtime = {
+                    "wall_time_sec": round(_elapsed, 1),
+                    "peak_vram_mb": round(_peak_mb, 1),
+                    "iterations": int(args.iterations),
+                    "seed": int(args.seed),
+                }
+                _rt_path = os.path.join(args.model_path, "runtime.json")
+                with open(_rt_path, "w", encoding="utf-8") as _rt_f:
+                    _json.dump(_runtime, _rt_f, indent=2)
+                print(f"[B] runtime.json written: wall={_elapsed:.1f}s peak_vram={_peak_mb:.1f}MB")
+            except Exception as _exc:
+                print(f"[B] runtime.json failed (non-fatal): {_exc!r}")
         if dist_info["enabled"]:
             dist.barrier(device_ids=[dist_info["local_rank"]])
         if is_main_process:

@@ -47,6 +47,7 @@ class ExperimentConfig:
     enable_multiscale_lpips: bool
     lpips_multiscale_scales: str
     lpips_multiscale_weights: str
+    lpips_loss_staged_iters: str
     psnr_loss_weight_init: float
     psnr_loss_weight_final: float
     psnr_loss_start_iter: int
@@ -137,9 +138,39 @@ class ExperimentConfig:
     adaptive_densify_max_iter: int
     adaptive_point_budget: int
 
+    psnr_final_multiplier: float = 1.0
+    lpips_final_multiplier: float = 1.0
+    psnr_ramp_start: int = 25000
+    psnr_ramp_end: int = 27000
+    geo_scale: float = 1.0
+    spa_target_gaussians: int = 0
+    final_target_gaussians: int = 0
+    post_spa_budget_floor: bool = False
+
+    def __post_init__(self):
+        import math
+        if self.post_spa_budget_floor and self.final_target_gaussians <= 0:
+            raise ValueError("post_spa_budget_floor requires final_target_gaussians")
+        if not math.isfinite(self.psnr_final_multiplier) or self.psnr_final_multiplier <= 0:
+            raise ValueError("psnr_final_multiplier must be finite and positive")
+        if not math.isfinite(self.lpips_final_multiplier) or self.lpips_final_multiplier < 0:
+            raise ValueError("lpips_final_multiplier must be finite and nonnegative")
+        if not math.isfinite(self.geo_scale) or self.geo_scale < 0:
+            raise ValueError("geo_scale must be finite and nonnegative")
+        if self.psnr_ramp_end <= self.psnr_ramp_start or self.final_target_gaussians < 0:
+            raise ValueError("Invalid ramp range or Gaussian target")
+
     @staticmethod
     def from_args(args):
         return ExperimentConfig(
+            psnr_final_multiplier=args.psnr_final_multiplier,
+            lpips_final_multiplier=args.lpips_final_multiplier,
+            psnr_ramp_start=args.psnr_ramp_start,
+            psnr_ramp_end=args.psnr_ramp_end,
+            geo_scale=args.geo_scale,
+            final_target_gaussians=args.final_target_gaussians,
+            post_spa_budget_floor=args.post_spa_budget_floor,
+            spa_target_gaussians=args.spa_target_gaussians,
             enable_geo_prior=args.enable_geo_prior,
             enable_resolution_adaptive=args.enable_resolution_adaptive,
             enable_sparse_optimization=args.enable_sparse_optimization,
@@ -184,6 +215,7 @@ class ExperimentConfig:
             enable_multiscale_lpips=args.enable_multiscale_lpips,
             lpips_multiscale_scales=args.lpips_multiscale_scales,
             lpips_multiscale_weights=args.lpips_multiscale_weights,
+            lpips_loss_staged_iters=str(getattr(args, "lpips_loss_staged_iters", "") or ""),
             psnr_loss_weight_init=args.psnr_loss_weight_init,
             psnr_loss_weight_final=args.psnr_loss_weight_final,
             psnr_loss_start_iter=args.psnr_loss_start_iter,

@@ -40,6 +40,32 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+# wandb 同步 (per-iter 测试指标) - 延迟导入, 默认禁用
+_WANDB = None
+def _get_wandb():
+    global _WANDB
+    if _WANDB is not None:
+        return _WANDB
+    if os.environ.get("WANDB_ENABLED", "0").strip() not in ("1", "true", "True", "yes"):
+        return None
+    try:
+        import wandb as _w
+        # cwd 下 wandb/ 目录会 shadow 真包
+        from pathlib import Path as _P
+        cw = (_P.cwd() / "wandb").resolve()
+        if cw.is_dir() and not (cw / "__init__.py").is_file() and not hasattr(_w, "init"):
+            import sys as _s
+            _s.modules.pop("wandb", None)
+            _s.path[:] = [p for p in _s.path if _P(p).resolve() != cw]
+            import wandb as _w
+        if not hasattr(_w, "log"):
+            return None
+        _WANDB = _w
+        return _WANDB
+    except Exception as exc:
+        print(f"[wandb] not available: {exc!r}")
+        return None
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -218,6 +244,20 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
+    # wandb 同步 train loss (每 step, 假设外部已经设了 WANDB_ENABLED)
+    # 控制频率: 每 100 step 一次, 避免百万级 sync
+    _w = _get_wandb()
+    if _w is not None and getattr(_w, "run", None) is not None and (iteration % 100 == 0 or iteration == 1):
+        try:
+            _w.log({
+                "train/l1_loss": float(Ll1.item()),
+                "train/total_loss": float(loss.item()),
+                "train/iter_time_ms": float(elapsed),
+                "train/total_points": int(scene.gaussians.get_xyz.shape[0]),
+                "iteration": int(iteration),
+            }, step=int(iteration))
+        except Exception:
+            pass
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -247,6 +287,17 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                # wandb per-iter (testing) 同步
+                _w = _get_wandb()
+                if _w is not None and getattr(_w, "run", None) is not None:
+                    try:
+                        _w.log({
+                            f"{config['name']}/l1": float(l1_test),
+                            f"{config['name']}/psnr": float(psnr_test),
+                            "iteration": int(iteration),
+                        }, step=int(iteration))
+                    except Exception:
+                        pass  # 静默失败, 不影响训练
 
         if tb_writer:
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)

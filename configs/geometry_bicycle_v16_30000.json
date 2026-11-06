@@ -1,0 +1,22 @@
+{
+  "source_path": "data/bicycle",
+  "checkpoint": "output/v16_local_3080/bicycle_v16_3080_resolution_aware/point_cloud/iteration_30000/point_cloud.ply",
+  "output": "output/v16_local_3080/bicycle_v16_3080_resolution_aware/geometry_eval_30000_25views_640",
+  "method": "TAGSs_v16_resolution_aware_iteration30000",
+  "max_views": 25,
+  "holdout": 8,
+  "max_side": 640,
+  "sh_degree": 3,
+  "alpha_min": 0.5,
+  "stride": 4,
+  "relative_depth_tolerance": 0.02,
+  "cycle_pixel_tolerance": 1.0,
+  "min_shared_tracks": 50,
+  "sfm_max_error": 2.0,
+  "sfm_min_track": 3,
+  "radius_thresholds": [
+    0.01,
+    0.02,
+    0.05
+  ]
+}

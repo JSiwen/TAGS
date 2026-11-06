@@ -178,6 +178,18 @@ class SchedulePlanner:
 
     @staticmethod
     def _scale_resolution_schedule(total_iterations: int, scale: float) -> str:
+        """生成 Scene 实际可识别的 scale 表达式 (1/2/4).
+
+        注意: ``Scene.loadCam`` 里的语义是 ``resolution = orig_w / (global_down * resolution_scale)``,
+        其中 ``global_down = orig_w / args.resolution`` (``--resolution -1`` 时为 1600). 因此:
+
+        * ``resolution_scale = 1.0``: 全分辨率 (args.resolution 像素)
+        * ``resolution_scale = 2.0``: 半分辨率
+        * ``resolution_scale = 4.0``: 1/4 分辨率
+
+        当 ``scale > 1.0`` (物理像素高, 估出的 1600 太小), 整体 schedule 整体延后一些.
+        当 ``scale <= 1.0`` (物理像素低或接近 1600), 沿用默认节奏.
+        """
         first = max(1, _round_iter(1200 * scale))
         second = max(first + 1, _round_iter(4000 * scale))
         if second >= total_iterations:
@@ -268,7 +280,12 @@ def apply_stage_plan(plan: StagePlan, opt, cfg, args=None) -> None:
 
     if args is not None:
         merged_test = sorted(set(getattr(args, "test_iterations", [])) | set(plan.checkpoint_iterations))
-        merged_save = sorted(set(getattr(args, "save_iterations", [])) | set(plan.checkpoint_iterations))
+        # Budget sweeps explicitly request their PLY save steps. Evaluation
+        # snapshots still run, but must not silently create multi-GB PLYs.
+        save_steps = set(getattr(args, "save_iterations", []))
+        if int(getattr(cfg, "final_target_gaussians", 0)) <= 0:
+            save_steps.update(plan.checkpoint_iterations)
+        merged_save = sorted(save_steps)
         args.test_iterations = merged_test
         args.save_iterations = merged_save
         args.live_stage_iterations = live_spec

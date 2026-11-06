@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Score bicycle E4 winner and DN-Splatter with the repo metrics.py."""
+"""Score bicycle E4 winner and DN-Splatter with the repo metrics.py.
+
+v2 新增 (2026-10-14):
+  - 读 wandb (Public API, 不需要重登录, 拉 5-seed mean/std 与本地 ledger 交叉)
+  - 5-seed 聚合 (output/<scene>/<group>/train/seed{0..4}/) + 旧路径兼容
+  - 4.5 winner 推荐 + gate check (PSNR≥DN+0.5, LPIPS≤DN-0.05)
+  - 不依赖 wandb 也不阻塞: wandb 拿不到时降级到本地 ledger
+"""
 
 import argparse
 import csv
 import json
+import os
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -263,6 +272,26 @@ def write_csv(path, tags, dn, delta):
         )
 
 
+# =====================================================================
+# v2 增强: 5-seed 聚合 + wandb 交叉 (从 scripts.exp4_summarize_v2 共享导入)
+# =====================================================================
+import sys as _sys  # noqa: E402
+if str(ROOT) not in _sys.path:
+    _sys.path.insert(0, str(ROOT))
+from scripts.exp4_summarize_v2 import (  # noqa: E402
+    WINNER_GATE,
+    _try_wandb,
+    discover_seed_dirs,
+    parse_seed_from_dir,
+    collect_seed_metrics,
+    fetch_wandb_runs,
+    cross_check_ledger_vs_wandb,
+    evaluate_winner_gate,
+    write_multiseed_csv,
+    multiseed_summary_text,
+)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tags-dir", default="output/bicycle_e4_lpips_ms_w005")
@@ -273,6 +302,20 @@ def main():
     parser.add_argument("--python-bin", default=sys.executable)
     parser.add_argument("--no-score", action="store_true")
     parser.add_argument("--require-both", action="store_true")
+    # v2 新增
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "tags-ablation"))
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
+    parser.add_argument("--wandb-group", default=os.environ.get("WANDB_RUN_GROUP", ""))
+    parser.add_argument("--scene", default="bicycle", help="v2 5-seed 聚合用, bicycle/vr_room")
+    parser.add_argument("--tags-group", default="lpips_ms_w005", help="v2 5-seed: TAGS 实验组 ID")
+    parser.add_argument("--method-name", default="ours_30000", help="results.json 里的 method key")
+    parser.add_argument("--no-wandb", action="store_true", help="跳过 wandb 拉取")
+    parser.add_argument("--multiseed-csv", default="output/bicycle_e4_vs_dn_multiseed.csv",
+                        help="v2 输出: 5-seed per-seed CSV")
+    parser.add_argument("--tags-dir-sibling-glob", default=None,
+                        help="v2: 额外扫描的同级 seed 目录 glob "
+                             "(默认 'bicycle_e4_lpips_ms_w005_seed*'). "
+                             "设为空串 '' 关闭自动 sibling 发现.")
     args = parser.parse_args()
     args.tags_dir = str(resolve_path(args.tags_dir))
     args.dn_dir = str(resolve_path(args.dn_dir))
@@ -331,11 +374,100 @@ def main():
         "delta_tags_minus_dn": delta,
         "per_view_tags_better": wins,
     }
-    json_out = Path(args.json_out)
+
+    # v2: 5-seed 聚合 + wandb 交叉对比
+    # 单 run 模式下自动发现同级 <dir>_seed{N} (bicycle e4 winner 历史用法)
+    tags_root = Path(args.tags_dir)
+    if args.tags_dir_sibling_glob is None:
+        if (tags_root / "test").is_dir() or any(tags_root.rglob("point_cloud.ply")):
+            sibling_glob = str(tags_root.name) + "_seed*"
+        # else: 保持 None (多 scene / exp4_runner 路径无需 sibling)
+    else:
+        sibling_glob = args.tags_dir_sibling_glob or None
+    print("\n[v2] 5-seed aggregation + wandb cross-check")
+    json_out = Path(args.json_out)  # 提前绑定, 给 v2 块用
     csv_out = Path(args.csv_out)
     json_out.parent.mkdir(parents=True, exist_ok=True)
+    tags_local = collect_seed_metrics(tags_root, method_name=args.method_name,
+                                      sibling_glob=sibling_glob)
+    print(f"[v2] Found {tags_local['n_seeds']} local seed(s) under {args.tags_dir}")
+    if tags_local.get("mean"):
+        m = tags_local["mean"]; s = tags_local["std"]
+        print(f"[v2] TAGS 5-seed mean: PSNR={m.get('psnr', 0):.4f}±{s.get('psnr', 0):.4f}"
+              f" SSIM={m.get('ssim', 0):.5f}±{s.get('ssim', 0):.5f}"
+              f" LPIPS={m.get('lpips', 0):.5f}±{s.get('lpips', 0):.5f}")
+
+    # 拉 wandb (best-effort)
+    wandb_runs = []
+    if not args.no_wandb:
+        try:
+            wandb_runs = fetch_wandb_runs(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                group=args.wandb_group or args.tags_group,
+                scene=args.scene,
+            )
+            print(f"[v2] wandb: {len(wandb_runs)} run(s) for {args.wandb_entity}/{args.wandb_project} group={args.wandb_group}")
+        except Exception as exc:
+            print(f"[v2] wandb fetch failed (degraded to local only): {exc!r}")
+    else:
+        print("[v2] wandb skipped (--no-wandb)")
+
+    # 交叉对比
+    cross = cross_check_ledger_vs_wandb(tags_local, wandb_runs)
+    print(f"[v2] cross-check: local_n={cross['local_n']} wandb_n={cross['wandb_n']} consistent={cross['consistent']}")
+    for note in cross.get("notes", []):
+        print(f"[v2]   note: {note}")
+
+    # winner gate
+    gate = evaluate_winner_gate(tags_local, dn_row)
+    print(f"[v2] winner gate: passed={gate.get('passed')} (Δpsnr={gate.get('psnr_delta', 0):+.3f}, Δlpips={gate.get('lpips_delta', 0):+.4f})")
+
+    # 写 5-seed CSV
+    multiseed_csv = Path(args.multiseed_csv)
+    multiseed_csv.parent.mkdir(parents=True, exist_ok=True)
+    write_multiseed_csv(
+        multiseed_csv,
+        scene=args.scene,
+        tags_group=args.tags_group,
+        tags_local=tags_local,
+        dn_row=dn_row,
+        gate=gate,
+        wandb_runs=wandb_runs,
+    )
+    print(f"[v2] Wrote {multiseed_csv}")
+
+    # 写交叉对比 json (与主 json 分开, 便于单独 review)
+    cross_json = json_out.with_name(json_out.stem + "_v2_cross.json")
+    cross_payload = {
+        "tags_5seed": tags_local,
+        "dn_baseline": dn_row,
+        "wandb_runs": wandb_runs,
+        "cross_check": cross,
+        "winner_gate": gate,
+    }
+    cross_json.write_text(json.dumps(cross_payload, indent=2), encoding="utf-8")
+    print(f"[v2] Wrote {cross_json}")
+
+    # 把 v2 数据塞回主 summary, 一次打印完整
+    summary["v2_multiseed"] = {
+        "tags_5seed_mean": tags_local.get("mean"),
+        "tags_5seed_std": tags_local.get("std"),
+        "n_seeds": tags_local.get("n_seeds"),
+        "winner_gate": gate,
+        "cross_check_summary": {
+            "consistent": cross.get("consistent"),
+            "local_n": cross.get("local_n"),
+            "wandb_n": cross.get("wandb_n"),
+            "n_notes": len(cross.get("notes", [])),
+        },
+    }
+    # 重新写主 json, 包含 v2 块
     json_out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    write_csv(csv_out, tags_row, dn_row, delta)
+    print(f"[v2] updated {json_out} with multiseed block")
+
+    json_out = Path(args.json_out)
+    csv_out = Path(args.csv_out)
     print(json.dumps(summary, indent=2))
     print(f"Wrote {json_out} and {csv_out}")
     if isinstance(score_status, str) and score_status.startswith("metrics_exit"):

@@ -23,6 +23,23 @@ class AdaptiveStageController:
         self.point_budget = max(0, int(getattr(cfg, "adaptive_point_budget", 8_000_000)))
         self._last_extension_iter = -1
 
+    def state_dict(self, opt):
+        return {
+            "enabled": self.enabled(),
+            "last_extension_iter": self._last_extension_iter,
+            "densify_until_iter": int(opt.densify_until_iter),
+            "spa_start_iter": int(self.cfg.spa_start_iter),
+            "spa_end_iter": int(self.cfg.spa_end_iter),
+        }
+
+    def load_state_dict(self, state, opt):
+        if bool(state["enabled"]) != self.enabled():
+            raise ValueError("Adaptive controller enable flag differs from checkpoint")
+        self._last_extension_iter = int(state["last_extension_iter"])
+        opt.densify_until_iter = int(state["densify_until_iter"])
+        self.cfg.spa_start_iter = int(state["spa_start_iter"])
+        self.cfg.spa_end_iter = int(state["spa_end_iter"])
+
     def enabled(self) -> bool:
         return bool(getattr(self.cfg, "enable_adaptive_stage_controller", False))
 

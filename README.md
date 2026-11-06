@@ -1,5 +1,7 @@
 # perceptual-front / geo-late 实验架构
 
+TAGS 深度图的生成、标定、训练输入与当前单位注意事项见 [`docs/DEPTH_MAP_USAGE.md`](docs/DEPTH_MAP_USAGE.md)。
+
 ## 设计要点
 
 | 阶段 | 迭代区间（默认 30k） | 内容 |

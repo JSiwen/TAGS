@@ -10,6 +10,18 @@ class SparseController:
         self.final_pruned = False
         self.contribution_ema = None
 
+    def capture_config(self):
+        return {key: value for key, value in vars(self.cfg).items()
+                if key.startswith("spa_") or key in (
+                    "prune_ratio2", "rho_lr", "sparse_mode", "enable_sparse_optimization", "sparse_budget_upperbound")}
+
+    def restore_config(self, state):
+        for key, value in state.items():
+            if not (key.startswith("spa_") or key in (
+                    "prune_ratio2", "rho_lr", "sparse_mode", "enable_sparse_optimization", "sparse_budget_upperbound")):
+                raise ValueError("Unexpected checkpoint sparse config key: " + key)
+            setattr(self.cfg, key, value)
+
     def apply(self, iteration, gaussians, scene, opt, render_pkg, train_state=None, sync_fn=None):
         if not self.cfg.enable_sparse_optimization:
             return {}
@@ -128,10 +140,15 @@ class SparseController:
         keep_ratio = max(0.0, min(1.0, 1.0 - self._spa_zero_ratio()))
         prune_n = self._cap_prune_count(n - int(keep_ratio * n), n)
         keep_n = n - prune_n
+        target = int(getattr(self.cfg, "spa_target_gaussians", 0))
+        if target > 0:
+            keep_n = min(n, target)
         if keep_n <= 0 or keep_n >= n:
             self.final_pruned = True
             return {"sparse/points": n}
         protected = self._structure_protection_mask(gaussians)
+        if target > 0 and int(protected.sum().item()) > keep_n:
+            raise ValueError("Protected Gaussian union exceeds target budget")
         keep_n = max(keep_n, min(n, int(protected.sum().item())))
         scores = scores.masked_fill(protected, float("inf"))
         keep_idx = torch.topk(scores, k=keep_n, largest=True).indices
