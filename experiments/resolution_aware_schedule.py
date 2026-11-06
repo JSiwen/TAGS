@@ -283,7 +283,8 @@ def apply_stage_plan(plan: StagePlan, opt, cfg, args=None) -> None:
         # Budget sweeps explicitly request their PLY save steps. Evaluation
         # snapshots still run, but must not silently create multi-GB PLYs.
         save_steps = set(getattr(args, "save_iterations", []))
-        if int(getattr(cfg, "final_target_gaussians", 0)) <= 0:
+        if (int(getattr(cfg, "final_target_gaussians", 0)) <= 0
+                and not bool(getattr(args, "no_save_schedule_point_clouds", False))):
             save_steps.update(plan.checkpoint_iterations)
         merged_save = sorted(save_steps)
         args.test_iterations = merged_test

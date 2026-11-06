@@ -55,7 +55,7 @@ PRIMARY_ITER="28500"
 FINAL_METHOD="ours_${ITERATIONS}"
 BASELINE_METHOD="ours_7000"
 
-mkdir -p "$OUTPUT_ROOT" "$LOG_DIR" "$MODEL_DIR"
+mkdir -p "$OUTPUT_ROOT" "$LOG_DIR"
 
 echo ""
 echo "=== v16 resolution-aware | VARIANT=${VARIANT} | ${CASE_NAME} ==="
@@ -86,6 +86,8 @@ TRAIN_ARGS=(
   --eval
   --llffhold 8
   --iterations "$ITERATIONS"
+  --save_iterations 28500 "$ITERATIONS"
+  --no_save_schedule_point_clouds
   --densify_from_iter 500
   --densify_grad_threshold 0.00016
   --enable_geo_prior
@@ -156,9 +158,16 @@ PY
 }
 
 if [[ "$RUN_TRAIN" == "1" ]]; then
+  FREE_KB="$(df -Pk "$OUTPUT_ROOT" | awk 'NR == 2 {print $4}')"
+  MIN_FREE_KB="$((6 * 1024 * 1024))"
+  if [[ -n "$FREE_KB" && "$FREE_KB" -lt "$MIN_FREE_KB" ]]; then
+    echo "Insufficient free disk space at $OUTPUT_ROOT: need at least 6 GiB for two representative PLYs; have $((FREE_KB / 1024)) MiB." >&2
+    exit 1
+  fi
   if [[ "$SKIP_COMPLETED" == "1" ]] && { [[ -f "$DONE_MARKER" ]] || case_has_metrics; }; then
     echo "Skip training (already completed): $CASE_NAME"
   else
+    mkdir -p "$MODEL_DIR"
     echo "Training -> $MODEL_DIR"
     CUDA_VISIBLE_DEVICES="$GPU_ID" \
       TAGGS_CPU_KNN_INIT="${TAGGS_CPU_KNN_INIT:-1}" \
@@ -172,19 +181,9 @@ fi
 
 if [[ "$RUN_RENDER_METRICS" == "1" ]]; then
   PLAN_JSON="$MODEL_DIR/schedule_plan.json"
-  STAGE_ITERS=(7000 18000 24000 27000 28500 30000)
-  if [[ -f "$PLAN_JSON" ]]; then
-    mapfile -t STAGE_ITERS < <(python - "$PLAN_JSON" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-plan = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-for item in plan.get("checkpoint_iterations", []):
-    print(int(item))
-PY
-)
-  fi
+  # Schedule checkpoints remain evaluation/logging points. Only the two
+  # representative PLYs requested by this runner are rendered and retained.
+  STAGE_ITERS=(28500 "$ITERATIONS")
   for iter in "${STAGE_ITERS[@]}"; do
     point_path="$MODEL_DIR/point_cloud/iteration_${iter}/point_cloud.ply"
     if [[ ! -f "$point_path" ]]; then

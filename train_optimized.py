@@ -85,6 +85,12 @@ def main():
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument(
+        "--no_save_schedule_point_clouds",
+        action="store_true",
+        default=False,
+        help="Do not save PLYs at resolution-aware schedule checkpoints; explicit --save_iterations still apply.",
+    )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--disable_viewer", action="store_true", default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])

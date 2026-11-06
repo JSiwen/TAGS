@@ -2,6 +2,8 @@
 
 TAGS 深度图的生成、标定、训练输入与当前单位注意事项见 [`docs/DEPTH_MAP_USAGE.md`](docs/DEPTH_MAP_USAGE.md)。
 
+Bicycle v16 的复现、深度/法线消融、独立验证与运行记录规范见 [`docs/TAGS_EXPERIMENT_OPTIMIZATION_PROTOCOL.md`](docs/TAGS_EXPERIMENT_OPTIMIZATION_PROTOCOL.md)。
+
 ## 设计要点
 
 | 阶段 | 迭代区间（默认 30k） | 内容 |
