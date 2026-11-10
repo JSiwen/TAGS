@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from .schedules import linear_warmup_decay, resolve_geo_decay_until
-from utils.normal_utils import depth_to_normals
+from utils.normal_utils import depth_to_normals, camera_z_to_normals
 
 
 class GeometricPriorLoss:
@@ -122,8 +122,48 @@ class GeometricPriorLoss:
         if normal_mask.sum() < 2:
             return torch.tensor(0.0, device="cuda"), 0.0, 0.0
 
-        pred_n = depth_to_normals(render_pkg["depth"])
-        gt_n = depth_to_normals(gt_depth)
+        if self.cfg.normal_prior_source == "external":
+            if getattr(viewpoint_cam, "normal_map", None) is None:
+                raise RuntimeError(
+                    f"External normal map was not loaded for {viewpoint_cam.image_name}"
+                )
+            if getattr(viewpoint_cam, "intrinsics", None) is None:
+                raise RuntimeError(
+                    f"Camera intrinsics were not loaded for {viewpoint_cam.image_name}"
+                )
+            alpha = render_pkg.get("alpha")
+            if alpha is None:
+                raise RuntimeError(
+                    "External normal supervision requires rendered alpha; "
+                    "enable compute_alpha in the training renderer"
+                )
+
+            weighted_invdepth = render_pkg["depth"]
+            alpha_valid = torch.isfinite(alpha) & (alpha > 1e-3)
+            invdepth_valid = torch.isfinite(weighted_invdepth) & (weighted_invdepth > 1e-8)
+            render_valid = alpha_valid & invdepth_valid
+            camera_z = alpha / weighted_invdepth.clamp_min(1e-8)
+            camera_z = torch.where(render_valid, camera_z, torch.zeros_like(camera_z))
+            pred_n, pred_normal_mask = camera_z_to_normals(
+                camera_z,
+                viewpoint_cam.intrinsics.cuda(),
+                valid_mask=render_valid.to(dtype=camera_z.dtype),
+            )
+            gt_n = viewpoint_cam.normal_map.cuda()
+            external_mask = viewpoint_cam.normal_mask.cuda()
+            if external_mask.ndim == 2:
+                external_mask = external_mask.unsqueeze(0)
+            if pred_n.shape != gt_n.shape:
+                raise ValueError(
+                    f"Rendered/external normal shape mismatch for {viewpoint_cam.image_name}: "
+                    f"pred={tuple(pred_n.shape)}, target={tuple(gt_n.shape)}"
+                )
+            normal_mask = normal_mask * external_mask * pred_normal_mask
+            normal_mask_fraction = float(normal_mask.float().mean().item())
+        else:
+            pred_n = depth_to_normals(render_pkg["depth"])
+            gt_n = depth_to_normals(gt_depth)
+
         if self.cfg.normal_prior_loss_type.lower() == "l1":
             base_loss = self._masked_mean(torch.abs(pred_n - gt_n).mean(dim=0, keepdim=True), normal_mask)
         else:
@@ -312,6 +352,9 @@ class GeometricPriorLoss:
             stats["geo/normal_weight"] = normal_w
             stats["geo/normal_loss"] = float(normal_loss.item())
             stats["geo/normal_mask_fraction"] = normal_mask_fraction
+            stats["geo/normal_source_external"] = float(
+                self.cfg.normal_prior_source == "external"
+            )
 
         scale = float(getattr(self.cfg, "geo_scale", 1.0))
         stats["geo/scale"] = scale

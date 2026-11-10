@@ -37,6 +37,8 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
+    normal_path: str = ""
+    intrinsics: np.ndarray = None
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -69,7 +71,15 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
+def readColmapCameras(
+    cam_extrinsics,
+    cam_intrinsics,
+    depths_params,
+    images_folder,
+    depths_folder,
+    test_cam_names_list,
+    normal_maps_folder="",
+):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -88,11 +98,14 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
+            fx = fy = float(intr.params[0])
+            cx, cy = float(intr.params[1]), float(intr.params[2])
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
+            fx, fy, cx, cy = [float(v) for v in intr.params[:4]]
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
@@ -109,10 +122,23 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         image_path = os.path.join(images_folder, extr.name)
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
+        normal_path = ""
+        if normal_maps_folder:
+            normal_path = os.path.join(
+                normal_maps_folder, os.path.splitext(extr.name)[0] + ".npy"
+            )
+            if not os.path.isfile(normal_path):
+                raise FileNotFoundError(
+                    f"External normal map for {extr.name} not found: {normal_path}"
+                )
+        intrinsics = np.array(
+            [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32
+        )
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
-                              width=width, height=height, is_test=image_name in test_cam_names_list)
+                              width=width, height=height, is_test=image_name in test_cam_names_list,
+                              normal_path=normal_path, intrinsics=intrinsics)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
@@ -143,7 +169,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, normal_maps_dir=""):
     bin_extr = os.path.join(path, "sparse/0", "images.bin")
     bin_intr = os.path.join(path, "sparse/0", "cameras.bin")
     txt_extr = os.path.join(path, "sparse/0", "images.txt")
@@ -226,7 +252,8 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
         images_folder=os.path.join(path, reading_dir), 
-        depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list)
+        depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list,
+        normal_maps_folder=normal_maps_dir)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]

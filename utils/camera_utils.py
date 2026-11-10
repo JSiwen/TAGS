@@ -11,6 +11,8 @@
 
 from scene.cameras import Camera
 import numpy as np
+import torch
+import torch.nn.functional as F
 from utils.graphics_utils import fov2focal
 from PIL import Image
 import cv2
@@ -116,11 +118,48 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
+    normal_map = None
+    normal_mask = None
+    if getattr(cam_info, "normal_path", ""):
+        normal_np = np.load(cam_info.normal_path, allow_pickle=False)
+        if normal_np.dtype != np.float32:
+            raise TypeError(
+                f"Normal map must be float32: {cam_info.normal_path} has {normal_np.dtype}"
+            )
+        if normal_np.shape != (orig_h, orig_w, 3):
+            raise ValueError(
+                f"Normal map size mismatch for {cam_info.image_name}: "
+                f"got {normal_np.shape}, expected {(orig_h, orig_w, 3)}"
+            )
+        finite = np.isfinite(normal_np).all(axis=2)
+        lengths = np.linalg.norm(np.nan_to_num(normal_np, nan=0.0, posinf=0.0, neginf=0.0), axis=2)
+        valid = finite & (lengths > 1e-6)
+        normal_np = np.nan_to_num(normal_np, nan=0.0, posinf=0.0, neginf=0.0)
+        normal_np = normal_np / np.maximum(lengths[..., None], 1e-6)
+        normal_t = torch.from_numpy(normal_np).permute(2, 0, 1).unsqueeze(0).float()
+        mask_t = torch.from_numpy(valid.astype(np.float32))[None, None]
+        target_size = (resolution[1], resolution[0])
+        if normal_t.shape[-2:] != target_size:
+            normal_t = F.interpolate(
+                normal_t, size=target_size, mode="bilinear", align_corners=False
+            )
+            mask_t = F.interpolate(mask_t, size=target_size, mode="nearest")
+        normal_t = F.normalize(normal_t, dim=1, eps=1e-6)
+        normal_map = normal_t[0]
+        normal_mask = mask_t[0]
+
+    intrinsics = None
+    if getattr(cam_info, "intrinsics", None) is not None:
+        intrinsics = np.asarray(cam_info.intrinsics, dtype=np.float32).copy()
+        intrinsics[0, :] *= float(resolution[0]) / float(cam_info.width)
+        intrinsics[1, :] *= float(resolution[1]) / float(cam_info.height)
+
     return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, depth_params=cam_info.depth_params,
                   image=image, invdepthmap=invdepthmap,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device,
-                  train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test)
+                  train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test,
+                  normal_map=normal_map, normal_mask=normal_mask, intrinsics=intrinsics)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, is_nerf_synthetic, is_test_dataset):
     camera_list = []

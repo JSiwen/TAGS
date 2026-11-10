@@ -51,6 +51,7 @@ class ModelParams(ParamGroup):
         self._model_path = ""
         self._images = "images"
         self._depths = ""
+        self.normal_maps_dir = ""
         self._resolution = -1
         self._white_background = False
         self.train_test_exp = False
@@ -65,6 +66,10 @@ class ModelParams(ParamGroup):
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        if g.normal_maps_dir:
+            if not os.path.isabs(g.normal_maps_dir):
+                g.normal_maps_dir = os.path.join(g.source_path, g.normal_maps_dir)
+            g.normal_maps_dir = os.path.abspath(g.normal_maps_dir)
         return g
 
 class PipelineParams(ParamGroup):
@@ -145,6 +150,7 @@ class ExperimentParams(ParamGroup):
         # Geometric prior settings
         self.geo_prior_depth = False
         self.geo_prior_normal = False
+        self.normal_prior_source = "depth"
         self.depth_prior_loss_type = "edge_aware_log_l1"
         self.normal_prior_loss_type = "cosine"
         self.depth_prior_pearson_weight = 0.0

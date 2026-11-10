@@ -132,6 +132,16 @@ def main():
     pipe = pp.extract(args)
     cfg = ExperimentConfig.from_args(ep.extract(args))
 
+    if cfg.normal_prior_source == "external":
+        if not cfg.geo_prior_normal:
+            raise ValueError("normal_prior_source=external requires --geo_prior_normal")
+        if not dataset.normal_maps_dir:
+            raise ValueError("normal_prior_source=external requires --normal_maps_dir")
+        if not os.path.isdir(dataset.normal_maps_dir):
+            raise FileNotFoundError(
+                f"External normal directory does not exist: {dataset.normal_maps_dir}"
+            )
+
     if dist_info["enabled"] and not args.ddp_allow_sparse_geometry:
         # DDP safety mode: topology-changing prune controllers can diverge across
         # ranks and cause collapse. Keep core training while disabling risky parts.

@@ -25,6 +25,7 @@ def render(
     separate_sh=False,
     override_color=None,
     use_trained_exp=False,
+    compute_alpha=False,
 ):
     """
     Render the scene.
@@ -111,6 +112,42 @@ def render(
         cov3D_precomp=cov3D_precomp,
     )
 
+    alpha_image = None
+    if compute_alpha:
+        # The rasterizer's third output is weighted inverse depth. Render white
+        # colors over black to obtain the matching accumulated opacity alpha;
+        # camera Z can then be recovered as alpha / weighted_invdepth.
+        alpha_settings = GaussianRasterizationSettings(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=tanfovx,
+            tanfovy=tanfovy,
+            bg=torch.zeros_like(bg_color),
+            scale_modifier=scaling_modifier,
+            viewmatrix=viewpoint_camera.world_view_transform,
+            projmatrix=viewpoint_camera.full_proj_transform,
+            sh_degree=pc.active_sh_degree,
+            campos=viewpoint_camera.camera_center,
+            prefiltered=False,
+            debug=pipe.debug,
+            antialiasing=pipe.antialiasing,
+        )
+        alpha_rasterizer = GaussianRasterizer(raster_settings=alpha_settings)
+        alpha_colors = torch.ones_like(pc.get_xyz)
+        empty_sh = torch.empty(0, device=means3D.device, dtype=torch.float32)
+        alpha_rgb, _, _ = alpha_rasterizer(
+            means3D=means3D,
+            means2D=means2D,
+            shs=torch.Tensor([]),
+            shs_dc=empty_sh,
+            colors_precomp=alpha_colors,
+            opacities=opacity,
+            scales=scales,
+            rotations=rotations,
+            cov3D_precomp=cov3D_precomp,
+        )
+        alpha_image = alpha_rgb[:1].clamp(0.0, 1.0)
+
     if use_trained_exp:
         exposure = pc.get_exposure_from_name(viewpoint_camera.image_name)
         rendered_image = (
@@ -125,4 +162,5 @@ def render(
         "visibility_filter": (radii > 0).nonzero(),
         "radii": radii,
         "depth": depth_image,
+        "alpha": alpha_image,
     }

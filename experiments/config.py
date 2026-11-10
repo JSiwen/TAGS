@@ -8,6 +8,7 @@ class ExperimentConfig:
     enable_sparse_optimization: bool
     geo_prior_depth: bool
     geo_prior_normal: bool
+    normal_prior_source: str
     depth_prior_loss_type: str
     normal_prior_loss_type: str
     depth_prior_pearson_weight: float
@@ -149,6 +150,11 @@ class ExperimentConfig:
 
     def __post_init__(self):
         import math
+        if self.normal_prior_source not in ("depth", "external"):
+            raise ValueError(
+                "normal_prior_source must be 'depth' or 'external', "
+                f"got {self.normal_prior_source!r}"
+            )
         if self.post_spa_budget_floor and self.final_target_gaussians <= 0:
             raise ValueError("post_spa_budget_floor requires final_target_gaussians")
         if not math.isfinite(self.psnr_final_multiplier) or self.psnr_final_multiplier <= 0:
@@ -176,6 +182,7 @@ class ExperimentConfig:
             enable_sparse_optimization=args.enable_sparse_optimization,
             geo_prior_depth=args.geo_prior_depth,
             geo_prior_normal=args.geo_prior_normal,
+            normal_prior_source=args.normal_prior_source,
             depth_prior_loss_type=args.depth_prior_loss_type,
             normal_prior_loss_type=args.normal_prior_loss_type,
             depth_prior_pearson_weight=args.depth_prior_pearson_weight,

@@ -467,6 +467,10 @@ class TrainingEngine:
                     bg,
                     use_trained_exp=self.dataset.train_test_exp,
                     separate_sh=self.sparse_adam_available,
+                    compute_alpha=(
+                        self.cfg.geo_prior_normal
+                        and self.cfg.normal_prior_source == "external"
+                    ),
                 )
 
                 train_state = {
@@ -678,7 +682,9 @@ class TrainingEngine:
                               "train/lpips_loss", "train/lpips_loss_weighted",
                               "train/detail_loss", "train/detail_weight", "train/detail_loss_weighted",
                               "train/detail_mask_fraction", "geometry/budget_floor", "geometry/prune_candidates",
-                              "geometry/prune_blocked", "geometry/pruned_points", "geo/scale", "geo/depth_raw", "geo/depth_loss", "geo/normal_raw", "geo/normal_loss"]
+                              "geometry/prune_blocked", "geometry/pruned_points", "geo/scale", "geo/depth_raw", "geo/depth_loss",
+                              "geo/normal_raw", "geo/normal_loss", "geo/normal_mask_fraction",
+                              "geo/normal_source_external"]
                     path = os.path.join(self.scene.model_path, "training_curves.csv")
                     exists = os.path.exists(path)
                     with open(path, "a", newline="") as f:
