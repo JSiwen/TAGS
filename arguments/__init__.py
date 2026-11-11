@@ -51,6 +51,8 @@ class ModelParams(ParamGroup):
         self._model_path = ""
         self._images = "images"
         self._depths = ""
+        self.depth_input_encoding = "auto"
+        self.depth_params_path = ""
         self.normal_maps_dir = ""
         self._resolution = -1
         self._white_background = False
@@ -70,6 +72,14 @@ class ModelParams(ParamGroup):
             if not os.path.isabs(g.normal_maps_dir):
                 g.normal_maps_dir = os.path.join(g.source_path, g.normal_maps_dir)
             g.normal_maps_dir = os.path.abspath(g.normal_maps_dir)
+        if g.depth_params_path:
+            if not os.path.isabs(g.depth_params_path):
+                g.depth_params_path = os.path.join(g.source_path, g.depth_params_path)
+            g.depth_params_path = os.path.abspath(g.depth_params_path)
+        if g.depth_input_encoding not in (
+            "auto", "monocular_inverse", "sensor_mm", "legacy_threshold"
+        ):
+            raise ValueError("Unsupported --depth_input_encoding: {}".format(g.depth_input_encoding))
         return g
 
 class PipelineParams(ParamGroup):

@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from utils.graphics_utils import fov2focal
+from utils.depth_encoding import decode_inverse_depth
 from PIL import Image
 import cv2
 import errno
@@ -21,6 +22,7 @@ import io
 import time
 
 WARNED = False
+DEPTH_DECODING_LOGGED = False
 
 
 def _load_pil_image_eager(path, max_attempts=8):
@@ -73,17 +75,25 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
 
     if cam_info.depth_path != "":
         try:
-            raw = _cv2_imread_retry(cam_info.depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32)
-            if is_nerf_synthetic:
-                invdepthmap = raw / 512
-            elif float(np.nanmax(raw)) > 50.0:
-                # MuSHRoom / iPhone 传感器深度：uint16 毫米 -> 1/meters
-                depth_m = raw * 1e-3
-                invdepthmap = np.zeros_like(depth_m, dtype=np.float32)
-                valid = depth_m > 1e-6
-                invdepthmap[valid] = 1.0 / depth_m[valid]
-            else:
-                invdepthmap = raw / float(2**16)
+            raw = _cv2_imread_retry(cam_info.depth_path, cv2.IMREAD_UNCHANGED)
+            encoding = getattr(args, "depth_input_encoding", "auto")
+            invdepthmap = decode_inverse_depth(
+                raw, encoding=encoding, is_nerf_synthetic=is_nerf_synthetic
+            )
+            global DEPTH_DECODING_LOGGED
+            if not DEPTH_DECODING_LOGGED:
+                print(
+                    "[DepthInput] encoding={} dtype={} raw_range=[{}, {}] "
+                    "inverse_range=[{:.6g}, {:.6g}]".format(
+                        encoding,
+                        raw.dtype,
+                        float(np.nanmin(raw)),
+                        float(np.nanmax(raw)),
+                        float(np.nanmin(invdepthmap)),
+                        float(np.nanmax(invdepthmap)),
+                    )
+                )
+                DEPTH_DECODING_LOGGED = True
 
         except FileNotFoundError:
             print(f"Error: The depth file at path '{cam_info.depth_path}' was not found.")

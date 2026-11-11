@@ -169,7 +169,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, normal_maps_dir=""):
+def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, normal_maps_dir="", depth_params_path=""):
     bin_extr = os.path.join(path, "sparse/0", "images.bin")
     bin_intr = os.path.join(path, "sparse/0", "cameras.bin")
     txt_extr = os.path.join(path, "sparse/0", "images.txt")
@@ -192,7 +192,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8, 
         cam_extrinsics = read_extrinsics_text(txt_extr)
         cam_intrinsics = read_intrinsics_text(txt_intr)
 
-    depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
+    depth_params_file = depth_params_path or os.path.join(path, "sparse/0", "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
     depths_params = None
     if depths != "":

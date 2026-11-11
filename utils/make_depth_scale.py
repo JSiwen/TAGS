@@ -2,8 +2,12 @@ import numpy as np
 import argparse
 import cv2
 import json
+import os
 
-from read_write_model import *
+try:
+    from .read_write_model import *
+except ImportError:
+    from read_write_model import *
 
 def get_scales(key, cameras, images, points3d_ordered, args):
     image_meta = images[key]
@@ -57,7 +61,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
     if valid.sum() > 10 and (invcolmapdepth.max() - invcolmapdepth.min()) > 1e-3:
         maps = maps[valid, :]
         invcolmapdepth = invcolmapdepth[valid]
-        invmonodepth = cv2.remap(invmonodepthmap, maps[..., 0], maps[..., 1], interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)[..., 0]
+        invmonodepth = sample_inverse_depth(invmonodepthmap, maps)
         
         ## Median / dev
         t_colmap = np.median(invcolmapdepth)
@@ -65,18 +69,38 @@ def get_scales(key, cameras, images, points3d_ordered, args):
 
         t_mono = np.median(invmonodepth)
         s_mono = np.mean(np.abs(invmonodepth - t_mono))
-        scale = s_colmap / s_mono
-        offset = t_colmap - t_mono * scale
+        if not np.isfinite(s_mono) or s_mono <= 1e-8:
+            scale = 0.0
+            offset = 0.0
+        else:
+            scale = s_colmap / s_mono
+            offset = t_colmap - t_mono * scale
     else:
         scale = 0
         offset = 0
     return {"image_name": image_meta.name[:-n_remove], "scale": scale, "offset": offset}
+
+
+def sample_inverse_depth(depth_map, image_xy):
+    """Sample a 2-D depth map at COLMAP xy coordinates, returning a 1-D array."""
+    points = np.asarray(image_xy, dtype=np.float32).reshape(-1, 2)
+    if points.size == 0:
+        return np.empty((0,), dtype=np.float32)
+    sampled = cv2.remap(
+        np.asarray(depth_map, dtype=np.float32),
+        points[:, 0].reshape(-1, 1),
+        points[:, 1].reshape(-1, 1),
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return sampled.reshape(-1)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--base_dir', default="../data/big_gaussians/standalone_chunks/campus")
     parser.add_argument('--depths_dir', default="../data/big_gaussians/standalone_chunks/campus/depths_any")
     parser.add_argument('--model_type', default="bin")
+    parser.add_argument('--output', default="", help="Optional output JSON path; default is sparse/0/depth_params.json")
     args = parser.parse_args()
 
 
@@ -97,7 +121,10 @@ if __name__ == '__main__':
         for depth_param in depth_param_list if depth_param != None
     }
 
-    with open(f"{args.base_dir}/sparse/0/depth_params.json", "w") as f:
+    output_path = args.output or f"{args.base_dir}/sparse/0/depth_params.json"
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, "w") as f:
         json.dump(depth_params, f, indent=2)
 
-    print(0)
+    print("Wrote {} calibration entries to {}".format(len(depth_params), output_path))

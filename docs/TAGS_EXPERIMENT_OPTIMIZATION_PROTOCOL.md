@@ -104,6 +104,7 @@ cd "$ROOT"
 
 COMMON=(
   -s "$SOURCE" --images images_4 --depths "$DEPTH_DIR"
+  --depth_input_encoding monocular_inverse
   --resolution 1 --data_device cpu --eval --llffhold 8
   --iterations 30000 --densify_from_iter 500
   --save_iterations 28500 30000 --no_save_schedule_point_clouds

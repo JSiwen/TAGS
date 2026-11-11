@@ -49,6 +49,7 @@ class Scene:
                 args.train_test_exp,
                 args.llffhold,
                 getattr(args, "normal_maps_dir", ""),
+                getattr(args, "depth_params_path", ""),
             )
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
