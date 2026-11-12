@@ -7,6 +7,22 @@ from utils.make_depth_scale import sample_inverse_depth
 
 
 class DepthInputDecodingTests(unittest.TestCase):
+    def test_rejects_colorized_depth_and_rgb_preview_composite(self):
+        raw = np.zeros((2, 6, 3), dtype=np.uint8)
+        raw[:, :2, 1] = 100
+        for mode in ("auto", "monocular_inverse", "sensor_mm", "legacy_threshold"):
+            with self.subTest(mode=mode):
+                with self.assertRaisesRegex(ValueError, "scalar depth"):
+                    decode_inverse_depth(raw, encoding=mode)
+
+    def test_accepts_repeated_grayscale_channels(self):
+        raw = np.array([[0, 128, 255]], dtype=np.uint8)
+        rgb = np.repeat(raw[..., None], 3, axis=-1)
+        np.testing.assert_allclose(
+            decode_inverse_depth(rgb, encoding="monocular_inverse"),
+            raw.astype(np.float32) / 255.0,
+        )
+
     def test_auto_decodes_uint8_as_monocular_inverse_depth(self):
         raw = np.array([[0, 50, 51, 255]], dtype=np.uint8)
         actual = decode_inverse_depth(raw, encoding="auto")

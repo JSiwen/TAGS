@@ -21,8 +21,17 @@ def decode_inverse_depth(raw, encoding="auto", is_nerf_synthetic=False):
     """
     array = np.asarray(raw)
     if array.ndim == 3:
-        if array.shape[2] < 1:
-            raise ValueError("Depth image has no channels")
+        if array.shape[2] not in (1, 3):
+            raise ValueError("Depth image must have one channel or three identical grayscale channels")
+        if array.shape[2] == 3 and not (
+            np.array_equal(array[..., 0], array[..., 1])
+            and np.array_equal(array[..., 0], array[..., 2])
+        ):
+            raise ValueError(
+                "Depth image contains color channels; RGB/depth preview composites "
+                "and colorized depth maps are not scalar depth. Regenerate with "
+                "--pred-only --grayscale."
+            )
         array = array[..., 0]
     if array.ndim != 2:
         raise ValueError("Depth image must be HxW or HxWxC; got {}".format(array.shape))

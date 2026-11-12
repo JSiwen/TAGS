@@ -189,7 +189,8 @@ def main():
         "--depth-anything-cmd",
         default=(
             "python Depth-Anything-V2/run.py "
-            "--encoder vitl --img-path {images} --outdir {output} --input-size 518"
+            "--encoder vitl --img-path {images} --outdir {output} --input-size 518 "
+            "--pred-only --grayscale"
         ),
         help="Depth Anything V2 推理命令, 用 {images} {output} {scene} 占位",
     )

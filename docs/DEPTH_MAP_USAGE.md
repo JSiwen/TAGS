@@ -4,6 +4,12 @@
 
 ## 先区分三种深度数据
 
+训练输入必须是单通道深度，或三个完全相同的灰度通道。Depth Anything V2 默认输出的「原图＋彩色深度」拼图不是深度数据，不能取第一通道或缩放后用于训练。生成时必须加 `--pred-only --grayscale`；`prepare_extra_scenes.py` 的默认命令已包含这两个参数，加载器会拒绝不同颜色通道的输入。
+
+2026-11-12 对 Garden 的审计发现旧 `depth_any_out` 为上述拼图。旧文件、对应标定及派生的 `mono_depth` 不能作为本轮有效先验。修复时应另建目录重新推理，并用修复后的 `make_depth_scale.py --output <新标定文件>` 标定；训练通过 `--depths`、`--depth_params_path` 指向新产物，保留旧文件用于溯源。计数一致、张量有限以及 resize 后尺寸相同，均不足以证明原始深度有效。
+
+也可使用 `python scripts/generate_scalar_depth.py --images data/garden/images_4 --output output/garden_scalar_depth --weights checkpoints/depth_anything_v2_vitl.pth` 直接生成单通道 PNG。脚本拒绝覆盖非空目录，并记录权重、模型源码、输入图像和深度文件的 SHA-256；需要安装匹配的 PyTorch、torchvision、OpenCV 和 NumPy，默认使用 CUDA。
+
 | 数据 | 常见路径 | 含义 | 在 TAGS 中的用途 |
 |---|---|---|---|
 | Depth Anything V2 原始预测 | `data/<scene>/depth_any_out/*.png` | 每张图单独归一化、量化为 8-bit 的相对深度/逆深度先验，不是米制真值 | COLMAP 场景的 `--depths` 输入；训练时转换并与渲染器深度比较 |
